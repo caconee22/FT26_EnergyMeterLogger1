@@ -1,0 +1,24 @@
+{
+  "name": "ft26-energymeter-logger",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host",
+    "build": "vite build",
+    "build:single": "vite build --mode single",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@fortawesome/fontawesome-free": "^7.1.0",
+    "html2canvas": "^1.4.1",
+    "notyf": "^3.10.0",
+    "uplot": "^1.6.32",
+    "vue": "^3.5.26"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.3",
+    "vite": "^7.3.0",
+    "vite-plugin-singlefile": "^2.3.3"
+  }
+}

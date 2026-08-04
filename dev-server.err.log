@@ -1,0 +1,23 @@
+node:internal/fs/watchers:323
+    const error = new UVException({
+                  ^
+
+Error: EBUSY: resource busy or locked, watch 'D:\FOURTOR\FT26_EnergyMeterLogger\무제-2 (1).ico'
+    at FSWatcher.<computed> (node:internal/fs/watchers:323:19)
+    at Object.watch (node:fs:2609:36)
+    at createFsWatchInstance (file:///D:/FOURTOR/FT26_EnergyMeterLogger/node_modules/vite/dist/node/chunks/config.js:12958:16)
+    at setFsWatchListener (file:///D:/FOURTOR/FT26_EnergyMeterLogger/node_modules/vite/dist/node/chunks/config.js:13000:14)
+    at NodeFsHandler$1._watchWithNodeFs (file:///D:/FOURTOR/FT26_EnergyMeterLogger/node_modules/vite/dist/node/chunks/config.js:13114:20)
+    at NodeFsHandler$1._handleFile (file:///D:/FOURTOR/FT26_EnergyMeterLogger/node_modules/vite/dist/node/chunks/config.js:13158:24)
+    at NodeFsHandler$1._addToNodeFs (file:///D:/FOURTOR/FT26_EnergyMeterLogger/node_modules/vite/dist/node/chunks/config.js:13332:26)
+Emitted 'error' event on FSWatcher instance at:
+    at FSWatcher._handleError (file:///D:/FOURTOR/FT26_EnergyMeterLogger/node_modules/vite/dist/node/chunks/config.js:14133:148)
+    at NodeFsHandler$1._addToNodeFs (file:///D:/FOURTOR/FT26_EnergyMeterLogger/node_modules/vite/dist/node/chunks/config.js:13337:18) {
+  errno: -4082,
+  syscall: 'watch',
+  code: 'EBUSY',
+  path: 'D:\\FOURTOR\\FT26_EnergyMeterLogger\\무제-2 (1).ico',
+  filename: 'D:\\FOURTOR\\FT26_EnergyMeterLogger\\무제-2 (1).ico'
+}
+
+Node.js v24.19.0
