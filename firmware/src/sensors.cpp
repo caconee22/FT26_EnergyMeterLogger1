@@ -2,6 +2,7 @@
 
 #include <Adafruit_ADS1X15.h>
 #include <Arduino.h>
+#include <math.h>
 
 #include "config.h"
 
@@ -66,6 +67,41 @@ bool readAdsRaw(int16_t channels[4]) {
   return true;
 }
 
+bool readAdsChannel(uint8_t channel, int16_t& raw) {
+  if (!ads_ready || channel > 3) {
+    return false;
+  }
+
+  raw = ads.readADC_SingleEnded(channel);
+  return true;
+}
+
+bool startAdsChannel(uint8_t channel) {
+  if (!ads_ready || channel > 3) {
+    return false;
+  }
+
+  ads.startADCReading(MUX_BY_CHANNEL[channel], false);
+  return true;
+}
+
+bool adsConversionReady() {
+  if (!ads_ready) {
+    return false;
+  }
+
+  return ads.conversionComplete();
+}
+
+bool readAdsLastRaw(int16_t& raw) {
+  if (!ads_ready) {
+    return false;
+  }
+
+  raw = ads.getLastConversionResults();
+  return true;
+}
+
 int32_t adsRawToMicrovolts(int16_t raw) {
   return (static_cast<int32_t>(raw) *
           ft26::ADS1115_GAIN_TWOTHIRDS_UV_PER_COUNT_X10) /
@@ -108,6 +144,41 @@ LvVoltageReading calculateLvVoltage(int16_t adc_raw) {
   reading.adc_uv = adsRawToMicrovolts(adc_raw);
   reading.log_centi_v = static_cast<int16_t>(divideRoundNearest64(
       static_cast<int64_t>(reading.adc_uv) * LV_VOLTAGE_RATIO_X100, 1000000));
+  return reading;
+}
+
+TemperatureReading calculateTemperature(int16_t adc_raw) {
+  return calculateTemperature(adc_raw, TEMP_SUPPLY_UV);
+}
+
+TemperatureReading calculateTemperature(int16_t adc_raw, int32_t supply_uv) {
+  TemperatureReading reading = {};
+  reading.adc_raw = adc_raw;
+  reading.adc_uv = adsRawToMicrovolts(adc_raw);
+  reading.supply_uv = supply_uv;
+  reading.below_range = reading.adc_uv <= TEMP_ADC_RANGE_LOW_UV;
+  reading.above_range = reading.adc_uv >= TEMP_ADC_RANGE_HIGH_UV;
+
+  if (supply_uv <= 0 || reading.adc_uv <= 0 || reading.adc_uv >= supply_uv) {
+    reading.valid = false;
+    reading.temperature_c = NAN;
+    return reading;
+  }
+
+  const int64_t numerator =
+      static_cast<int64_t>(TEMP_FIXED_RESISTOR_OHM) *
+      (supply_uv - reading.adc_uv);
+  reading.ntc_ohm =
+      divideRoundNearest64(numerator, reading.adc_uv);
+
+  const float ratio =
+      static_cast<float>(reading.ntc_ohm) / static_cast<float>(TEMP_NTC_R0_OHM);
+  const float temp_k =
+      1.0f / ((1.0f / TEMP_NTC_T0_K) + (logf(ratio) / TEMP_NTC_BETA));
+  reading.temperature_c = temp_k - 273.15f;
+  reading.log_centi_c =
+      static_cast<int16_t>(lroundf(reading.temperature_c * 100.0f));
+  reading.valid = isfinite(reading.temperature_c);
   return reading;
 }
 

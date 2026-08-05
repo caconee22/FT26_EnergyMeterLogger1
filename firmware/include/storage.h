@@ -1,6 +1,9 @@
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
+
+#include "log_format.h"
 
 namespace ft26::storage {
 
@@ -12,5 +15,20 @@ bool cardMounted();
 
 // 마운트된 SD 카드의 전체 용량을 바이트로 반환합니다.
 uint64_t cardSizeBytes();
+
+// 원본 펌웨어와 같은 규칙으로 로그 파일을 열고 헤더를 씁니다.
+bool openLogFile(const log_format::Header& header, char* filename, size_t filename_size);
+
+// 열린 로그 파일에 측정 레코드 묶음을 씁니다.
+bool writeRecords(const log_format::Log* records, size_t count);
+
+// 열린 로그 파일의 캐시를 SD 카드에 반영합니다.
+bool syncLogFile();
+
+// 열린 로그 파일을 닫습니다.
+void closeLogFile();
+
+// 로그 파일이 열린 상태인지 반환합니다.
+bool logFileOpen();
 
 }  // namespace ft26::storage
