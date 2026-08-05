@@ -26,6 +26,15 @@ constexpr uint32_t SERIAL_BAUD = 115200;
 constexpr uint32_t I2C_CLOCK_HZ = 400000;
 constexpr uint16_t I2C_TIMEOUT_MS = 5;
 
+constexpr uint32_t POWER_SENSE_PRESENT_MV_MIN = 1800;
+
+constexpr uint8_t ADS_CH_HV_VOLTAGE = 0;
+constexpr uint8_t ADS_CH_HV_CURRENT = 1;
+constexpr uint8_t ADS_CH_LV_VOLTAGE = 2;
+constexpr uint8_t ADS_CH_EXTERNAL_TEMP = 3;
+
+constexpr int32_t ADS1115_GAIN_TWOTHIRDS_UV_PER_COUNT_X10 = 1875;
+
 constexpr uint32_t RECORD_INTERVAL_MS = 10;
 constexpr uint32_t SLOW_CHANNEL_INTERVAL_MS = 100;
 constexpr uint32_t FILE_SYNC_INTERVAL_MS = 100;
