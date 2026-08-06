@@ -19,18 +19,18 @@ namespace {
 
 Status recorder_status = {};
 log_format::Log prelog_records[ft26::PRELOG_RECORD_CAPACITY] = {};
-log_format::Log write_batch[ft26::WRITE_BATCH_RECORD_COUNT] = {};
-uint16_t write_batch_count = 0;
 uint32_t next_record_ms = 0;
 uint32_t last_sync_ms = 0;
 uint32_t file_start_reference_ms = 0;
+uint16_t prebuffer_dump_index = 0;
 int32_t current_zero_uv = measurements::HV_CURRENT_ZERO_UV;
 int16_t hv_voltage_zero_deci_v = 0;
 char current_filename[96] = {};
 uint32_t hv_current_range_since_ms = 0;
 uint32_t hv_voltage_range_since_ms = 0;
 
-bool flushBatch();
+bool dumpPrebufferChunk(uint32_t now);
+bool flushRemainingPrebuffer();
 
 // 시리얼에 한 줄짜리 상태/오류 로그를 출력합니다.
 void logLine(const char* level, const char* message) {
@@ -53,6 +53,7 @@ void markAdcError(const char* channel_name) {
   recorder_status.state = State::Fault;
   status_led::setFault(status_led::FaultGroup::Adc);
   logLinef("ERROR", "ADS1115 failed source=%s", channel_name);
+  storage::appendErrorLog(millis(), "ADC", channel_name);
 }
 
 // SD 파일 작업 오류를 상태와 LED fault에 반영합니다.
@@ -61,12 +62,14 @@ void markSdError(const char* action) {
   recorder_status.state = State::Fault;
   status_led::setFault(status_led::FaultGroup::Sd);
   logLinef("ERROR", "SD log %s failed", action);
+  storage::appendErrorLog(millis(), "SD", action);
 }
 
 // 측정 범위 오류를 상태와 LED fault에 반영합니다.
 void markRangeError(const char* source) {
   if (!recorder_status.range_error) {
     logLinef("ERROR", "Range fault source=%s", source);
+    storage::appendErrorLog(millis(), "RANGE", source);
   }
   recorder_status.range_error = true;
   status_led::setFault(status_led::FaultGroup::Range);
@@ -81,9 +84,10 @@ void handlePowerLoss() {
   recorder_status.power_lost = true;
   recorder_status.state = State::Fault;
   logLine("ERROR", "Input power lost; closing log file");
+  storage::appendErrorLog(millis(), "POWER", "input power lost; closing log file");
 
   if (recorder_status.file_started) {
-    flushBatch();
+    flushRemainingPrebuffer();
     storage::syncLogFile();
     storage::closeLogFile();
   }
@@ -122,7 +126,7 @@ void updateHeldRangeFault(bool active, uint32_t hold_ms, uint32_t now,
 
 // 파일 시작 전에는 RAM에 쌓고, 파일 시작 후에는 write batch에 추가합니다.
 bool appendRecord(const log_format::Log& record) {
-  if (!recorder_status.file_started) {
+  if (!recorder_status.prebuffer_dump_done) {
     if (recorder_status.buffered_records < ft26::PRELOG_RECORD_CAPACITY) {
       prelog_records[recorder_status.buffered_records++] = record;
       return true;
@@ -132,38 +136,18 @@ bool appendRecord(const log_format::Log& record) {
     return false;
   }
 
-  write_batch[write_batch_count++] = record;
-  if (write_batch_count < ft26::WRITE_BATCH_RECORD_COUNT) {
-    return true;
-  }
-
-  if (!storage::writeRecords(write_batch, write_batch_count)) {
-    markSdError("write batch");
-    write_batch_count = 0;
+  if (!storage::writeRecords(&record, 1)) {
+    markSdError("write record");
     return false;
   }
 
-  recorder_status.records_written += write_batch_count;
-  write_batch_count = 0;
+  recorder_status.records_written++;
   status_led::notifySdWrite();
   return true;
 }
 
 // 쌓여 있는 write batch를 SD 파일에 기록합니다.
 bool flushBatch() {
-  if (write_batch_count == 0) {
-    return true;
-  }
-
-  if (!storage::writeRecords(write_batch, write_batch_count)) {
-    markSdError("write tail");
-    write_batch_count = 0;
-    return false;
-  }
-
-  recorder_status.records_written += write_batch_count;
-  write_batch_count = 0;
-  status_led::notifySdWrite();
   return true;
 }
 
@@ -190,17 +174,74 @@ bool startFileLogging(uint32_t now) {
   logLinef("INFO", "Log file started %s buffered=%u",
            current_filename, recorder_status.buffered_records);
 
-  if (recorder_status.buffered_records > 0) {
-    if (!storage::writeRecords(prelog_records, recorder_status.buffered_records)) {
-      markSdError("write prebuffer");
-      return false;
-    }
-    recorder_status.records_written += recorder_status.buffered_records;
-    status_led::notifySdWrite();
+  prebuffer_dump_index = 0;
+  recorder_status.prebuffer_dumped_records = 0;
+  recorder_status.prebuffer_dump_done = recorder_status.buffered_records == 0;
+  last_sync_ms = now;
+  return true;
+}
+
+// 초기 RAM record를 작은 조각으로 SD에 옮겨 100Hz 측정 루프가 오래 막히지 않게 합니다.
+bool dumpPrebufferChunk(uint32_t now) {
+  (void)now;
+  if (!recorder_status.file_started || recorder_status.prebuffer_dump_done) {
+    return true;
   }
 
-  last_sync_ms = now;
-  return storage::syncLogFile();
+  const uint32_t current_ms = millis();
+  if (static_cast<int32_t>(next_record_ms - current_ms) <=
+      static_cast<int32_t>(ft26::PRELOG_DUMP_MIN_IDLE_MS)) {
+    return true;
+  }
+
+  if (prebuffer_dump_index >= recorder_status.buffered_records) {
+    recorder_status.prebuffer_dump_done = true;
+    status_led::notifySdWrite();
+    return storage::syncLogFile();
+  }
+
+  const uint16_t remaining = recorder_status.buffered_records - prebuffer_dump_index;
+  const size_t count =
+      remaining < ft26::PRELOG_DUMP_RECORDS_PER_TICK
+          ? remaining
+          : ft26::PRELOG_DUMP_RECORDS_PER_TICK;
+
+  if (!storage::writeRecords(&prelog_records[prebuffer_dump_index], count)) {
+    markSdError("write prebuffer chunk");
+    return false;
+  }
+
+  prebuffer_dump_index += static_cast<uint16_t>(count);
+  recorder_status.prebuffer_dumped_records = prebuffer_dump_index;
+  recorder_status.records_written += count;
+  status_led::notifySdWrite();
+  return true;
+}
+
+// 전원 차단 순간에는 남은 초기 RAM record를 한 번에 써서 로그 보존을 우선합니다.
+bool flushRemainingPrebuffer() {
+  if (!recorder_status.file_started || recorder_status.prebuffer_dump_done) {
+    return true;
+  }
+
+  if (prebuffer_dump_index >= recorder_status.buffered_records) {
+    recorder_status.prebuffer_dump_done = true;
+    recorder_status.prebuffer_dumped_records = prebuffer_dump_index;
+    return true;
+  }
+
+  const uint16_t remaining = recorder_status.buffered_records - prebuffer_dump_index;
+  if (!storage::writeRecords(&prelog_records[prebuffer_dump_index], remaining)) {
+    markSdError("flush remaining prebuffer");
+    return false;
+  }
+
+  prebuffer_dump_index = recorder_status.buffered_records;
+  recorder_status.prebuffer_dumped_records = prebuffer_dump_index;
+  recorder_status.records_written += remaining;
+  recorder_status.prebuffer_dump_done = true;
+  status_led::notifySdWrite();
+  return true;
 }
 
 // 설정된 주기마다 batch 기록과 SD flush를 수행합니다.
@@ -209,7 +250,10 @@ void syncIfNeeded(uint32_t now) {
     return;
   }
 
-  flushBatch();
+  if (!recorder_status.prebuffer_dump_done) {
+    return;
+  }
+
   if (!storage::syncLogFile()) {
     markSdError("sync");
     return;
@@ -279,7 +323,7 @@ void begin(const calibration::Result& calibration_result) {
 
   next_record_ms = recorder_status.started_ms;
   last_sync_ms = recorder_status.started_ms;
-  write_batch_count = 0;
+  prebuffer_dump_index = 0;
   current_zero_uv = calibration_result.hv_current_zero_uv;
   hv_voltage_zero_deci_v = calibration_result.hv_voltage_zero_deci_v;
   file_start_reference_ms = boot::status().boot_millis;
@@ -303,10 +347,15 @@ void begin(const calibration::Result& calibration_result) {
     }
     logLinef("ERROR", "Recorder start with calibration failure source=%s",
              calibration_result.error_source ? calibration_result.error_source : "unknown");
+    storage::appendErrorLog(millis(), "CALIBRATION",
+                            calibration_result.error_source
+                                ? calibration_result.error_source
+                                : "unknown");
     return;
   }
 
   recorder_status.state = State::Buffering;
+  recorder_status.prebuffer_dump_done = false;
   status_led::setMode(status_led::Mode::SlowPulse);
   logLine("INFO", "Recorder buffering started");
 }
@@ -344,6 +393,7 @@ void tick() {
     }
   }
 
+  dumpPrebufferChunk(now);
   syncIfNeeded(now);
 }
 

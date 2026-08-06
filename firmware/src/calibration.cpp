@@ -5,6 +5,7 @@
 #include "config.h"
 #include "measurements.h"
 #include "sensors.h"
+#include "storage.h"
 
 namespace ft26::calibration {
 namespace {
@@ -34,6 +35,7 @@ Result runHvZeroCalibration() {
     result.power_lost = true;
     result.error_source = "power";
     Serial.println("[ERROR] Calibration stopped by power loss");
+    storage::appendErrorLog(millis(), "CALIBRATION", "power lost during wait");
     return result;
   }
 
@@ -47,6 +49,7 @@ Result runHvZeroCalibration() {
       result.power_lost = true;
       result.error_source = "power";
       Serial.println("[ERROR] Calibration stopped by power loss");
+      storage::appendErrorLog(millis(), "CALIBRATION", "power lost during sampling");
       return result;
     }
 
@@ -56,12 +59,14 @@ Result runHvZeroCalibration() {
       result.adc_error = true;
       result.error_source = "cal-hv-voltage";
       Serial.println("[ERROR] Calibration ADS read failed channel=hv-voltage");
+      storage::appendErrorLog(millis(), "CALIBRATION", "ADS read failed channel=hv-voltage");
       return result;
     }
     if (!sensors::readAdsChannel(ft26::ADS_CH_HV_CURRENT, hv_current_raw)) {
       result.adc_error = true;
       result.error_source = "cal-hv-current";
       Serial.println("[ERROR] Calibration ADS read failed channel=hv-current");
+      storage::appendErrorLog(millis(), "CALIBRATION", "ADS read failed channel=hv-current");
       return result;
     }
 
