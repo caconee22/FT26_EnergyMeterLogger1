@@ -2,7 +2,6 @@
 
 #include <Adafruit_ADS1X15.h>
 #include <Arduino.h>
-#include <math.h>
 
 #include "config.h"
 
@@ -12,26 +11,16 @@ namespace {
 Adafruit_ADS1115 ads;
 bool ads_ready = false;
 
-int32_t divideRoundNearest64(int64_t value, int64_t divisor) {
-  if (divisor == 0) {
-    return 0;
-  }
-
-  const int64_t half = divisor / 2;
-  if (value >= 0) {
-    return static_cast<int32_t>((value + half) / divisor);
-  }
-  return static_cast<int32_t>((value - half) / divisor);
-}
-
 }  // namespace
 
+// ESP32 내장 ADC 전원 감시 핀을 설정합니다.
 bool beginPowerSense() {
   analogReadResolution(12);
   analogSetPinAttenuation(ft26::PIN_POWER_SENSE_ADC, ADC_11db);
   return true;
 }
 
+// ESP32 내장 ADC로 입력 전원 존재 여부를 읽습니다.
 PowerSenseReading readPowerSense() {
   PowerSenseReading reading = {};
   reading.raw = analogRead(ft26::PIN_POWER_SENSE_ADC);
@@ -40,6 +29,7 @@ PowerSenseReading readPowerSense() {
   return reading;
 }
 
+// ADS1115를 시작하고 gain/data rate를 설정합니다.
 bool beginAds1115() {
   ads_ready = ads.begin(ft26::I2C_ADDR_ADS1115, &Wire);
   if (!ads_ready) {
@@ -51,10 +41,12 @@ bool beginAds1115() {
   return true;
 }
 
+// ADS1115 초기화 성공 상태를 반환합니다.
 bool adsReady() {
   return ads_ready;
 }
 
+// ADS1115 4개 채널을 blocking 방식으로 한 번씩 읽습니다.
 bool readAdsRaw(int16_t channels[4]) {
   if (!ads_ready || channels == nullptr) {
     return false;
@@ -67,6 +59,7 @@ bool readAdsRaw(int16_t channels[4]) {
   return true;
 }
 
+// ADS1115 단일 채널을 blocking 방식으로 읽습니다.
 bool readAdsChannel(uint8_t channel, int16_t& raw) {
   if (!ads_ready || channel > 3) {
     return false;
@@ -76,6 +69,7 @@ bool readAdsChannel(uint8_t channel, int16_t& raw) {
   return true;
 }
 
+// ADS1115 단일 채널 변환을 non-blocking 방식으로 시작합니다.
 bool startAdsChannel(uint8_t channel) {
   if (!ads_ready || channel > 3) {
     return false;
@@ -85,6 +79,7 @@ bool startAdsChannel(uint8_t channel) {
   return true;
 }
 
+// ADS1115 non-blocking 변환 완료 여부를 확인합니다.
 bool adsConversionReady() {
   if (!ads_ready) {
     return false;
@@ -93,6 +88,7 @@ bool adsConversionReady() {
   return ads.conversionComplete();
 }
 
+// ADS1115 마지막 변환 결과를 읽습니다.
 bool readAdsLastRaw(int16_t& raw) {
   if (!ads_ready) {
     return false;
@@ -100,86 +96,6 @@ bool readAdsLastRaw(int16_t& raw) {
 
   raw = ads.getLastConversionResults();
   return true;
-}
-
-int32_t adsRawToMicrovolts(int16_t raw) {
-  return (static_cast<int32_t>(raw) *
-          ft26::ADS1115_GAIN_TWOTHIRDS_UV_PER_COUNT_X10) /
-         10;
-}
-
-HvCurrentReading calculateHvCurrent(int16_t adc_raw, int32_t zero_offset_uv) {
-  HvCurrentReading reading = {};
-  reading.adc_raw = adc_raw;
-  reading.sensor_uv = adsRawToMicrovolts(adc_raw);
-  reading.zero_offset_uv = zero_offset_uv;
-
-  const int32_t delta_uv = reading.sensor_uv - zero_offset_uv;
-  reading.current_ma =
-      divideRoundNearest64(static_cast<int64_t>(delta_uv) * 1000,
-                           HV_CURRENT_SENSITIVITY_UV_PER_A);
-  reading.log_deciamp =
-      static_cast<int16_t>(divideRoundNearest64(delta_uv, 500));
-  reading.below_range = reading.sensor_uv <= HV_CURRENT_RANGE_LOW_UV;
-  reading.above_range = reading.sensor_uv >= HV_CURRENT_RANGE_HIGH_UV;
-
-  return reading;
-}
-
-HvVoltageReading calculateHvVoltage(int16_t adc_raw) {
-  HvVoltageReading reading = {};
-  reading.adc_raw = adc_raw;
-  reading.adc_uv = adsRawToMicrovolts(adc_raw);
-  reading.log_deci_v = static_cast<int16_t>(divideRoundNearest64(
-      static_cast<int64_t>(reading.adc_uv) * HV_VOLTAGE_DIVIDER_RATIO_X100,
-      10000000));
-  reading.adc_over_range = reading.adc_uv > HV_VOLTAGE_ADC_RANGE_UV;
-  reading.hv_over_range = reading.log_deci_v > HV_VOLTAGE_RANGE_DECI_V;
-  return reading;
-}
-
-LvVoltageReading calculateLvVoltage(int16_t adc_raw) {
-  LvVoltageReading reading = {};
-  reading.adc_raw = adc_raw;
-  reading.adc_uv = adsRawToMicrovolts(adc_raw);
-  reading.log_centi_v = static_cast<int16_t>(divideRoundNearest64(
-      static_cast<int64_t>(reading.adc_uv) * LV_VOLTAGE_RATIO_X100, 1000000));
-  return reading;
-}
-
-TemperatureReading calculateTemperature(int16_t adc_raw) {
-  return calculateTemperature(adc_raw, TEMP_SUPPLY_UV);
-}
-
-TemperatureReading calculateTemperature(int16_t adc_raw, int32_t supply_uv) {
-  TemperatureReading reading = {};
-  reading.adc_raw = adc_raw;
-  reading.adc_uv = adsRawToMicrovolts(adc_raw);
-  reading.supply_uv = supply_uv;
-  reading.below_range = reading.adc_uv <= TEMP_ADC_RANGE_LOW_UV;
-  reading.above_range = reading.adc_uv >= TEMP_ADC_RANGE_HIGH_UV;
-
-  if (supply_uv <= 0 || reading.adc_uv <= 0 || reading.adc_uv >= supply_uv) {
-    reading.valid = false;
-    reading.temperature_c = NAN;
-    return reading;
-  }
-
-  const int64_t numerator =
-      static_cast<int64_t>(TEMP_FIXED_RESISTOR_OHM) *
-      (supply_uv - reading.adc_uv);
-  reading.ntc_ohm =
-      divideRoundNearest64(numerator, reading.adc_uv);
-
-  const float ratio =
-      static_cast<float>(reading.ntc_ohm) / static_cast<float>(TEMP_NTC_R0_OHM);
-  const float temp_k =
-      1.0f / ((1.0f / TEMP_NTC_T0_K) + (logf(ratio) / TEMP_NTC_BETA));
-  reading.temperature_c = temp_k - 273.15f;
-  reading.log_centi_c =
-      static_cast<int16_t>(lroundf(reading.temperature_c * 100.0f));
-  reading.valid = isfinite(reading.temperature_c);
-  return reading;
 }
 
 }  // namespace ft26::sensors
