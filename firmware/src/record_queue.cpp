@@ -26,8 +26,8 @@ void reset() {
 bool push(const log_format::Log& record) {
   portENTER_CRITICAL(&queue_mux);
   if (used >= ft26::STORAGE_QUEUE_RECORD_CAPACITY) {
-    portEXIT_CRITICAL(&queue_mux);
-    return false;
+    tail = (tail + 1) % ft26::STORAGE_QUEUE_RECORD_CAPACITY;
+    --used;
   }
 
   records[head] = record;

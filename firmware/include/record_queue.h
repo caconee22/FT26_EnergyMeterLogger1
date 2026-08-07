@@ -10,7 +10,7 @@ namespace ft26::record_queue {
 // SD writer가 사용할 RAM record queue를 초기화합니다.
 void reset();
 
-// queue에 record 1개를 넣습니다. 가득 차 있으면 false를 반환합니다.
+// queue에 record 1개를 넣습니다. 가득 차 있으면 가장 오래된 record를 버립니다.
 bool push(const log_format::Log& record);
 
 // queue가 비어 있는지 반환합니다.

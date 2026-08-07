@@ -30,6 +30,7 @@ constexpr uint32_t POWER_SENSE_PRESENT_MV_MIN = 1800;
 constexpr uint32_t POWER_LOSS_CONFIRM_MS = 10;
 constexpr uint32_t SD_MUTEX_WAIT_MS = 2;
 constexpr uint32_t SD_EMERGENCY_MUTEX_WAIT_MS = 10;
+constexpr uint32_t SD_REMOUNT_INTERVAL_MS = 1000;
 
 constexpr uint8_t ADS_CH_HV_VOLTAGE = 0;
 constexpr uint8_t ADS_CH_HV_CURRENT = 1;
@@ -52,7 +53,7 @@ constexpr size_t PRELOG_RECORD_CAPACITY =
     FILE_LOG_START_DELAY_MS / RECORD_INTERVAL_MS + PRELOG_EXTRA_RECORD_CAPACITY;
 constexpr size_t PRELOG_DUMP_RECORDS_PER_TICK = 8;
 constexpr uint32_t PRELOG_DUMP_MIN_IDLE_MS = 3;
-constexpr size_t STORAGE_QUEUE_RECORD_CAPACITY = 512;
+constexpr size_t STORAGE_QUEUE_RECORD_CAPACITY = 1000;
 constexpr size_t STORAGE_WRITE_RECORDS_PER_TICK = 8;
 
 }  // namespace ft26
