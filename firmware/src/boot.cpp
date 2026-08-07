@@ -178,7 +178,6 @@ void initializeSd() {
   hw.sd_card_size_bytes = storage::cardSizeBytes();
 
   if (hw.sd_mounted) {
-    storage::setErrorLogFileName(hw.boot_time, hw.uid);
     logLinef("INFO", "SD mounted size=%llu MB",
              hw.sd_card_size_bytes / (1024ULL * 1024ULL));
   } else {
@@ -188,31 +187,6 @@ void initializeSd() {
 }
 
 // SD 마운트 이후 부팅 중 이미 발견된 오류를 텍스트 로그에 남깁니다.
-void writeBootErrorsToSdLog() {
-  if (!hw.sd_mounted) {
-    return;
-  }
-
-  if (!hw.power_present) {
-    storage::appendErrorLog(millis(), "BOOT/POWER", "power sense below threshold");
-  }
-  if (!hw.rtc_found) {
-    storage::appendErrorLog(millis(), "BOOT/RTC", "DS3231 address not found");
-  }
-  if (!hw.rtc_ready) {
-    storage::appendErrorLog(millis(), "BOOT/RTC", "DS3231 begin failed");
-  }
-  if (hw.rtc_lost_power) {
-    storage::appendErrorLog(millis(), "BOOT/RTC", "DS3231 lostPower flag set");
-  }
-  if (!hw.ads_found) {
-    storage::appendErrorLog(millis(), "BOOT/ADC", "ADS1115 address not found");
-  }
-  if (!hw.ads_ready) {
-    storage::appendErrorLog(millis(), "BOOT/ADC", "ADS1115 begin failed");
-  }
-}
-
 }  // namespace
 
 const HardwareStatus& initializeHardware() {
@@ -227,7 +201,6 @@ const HardwareStatus& initializeHardware() {
   initializeRtc();
   initializeAds();
   initializeSd();
-  writeBootErrorsToSdLog();
 
   logLinef("INFO", "Hardware start complete rtc=%u ads=%u sd=%u power=%u",
            hw.rtc_ready, hw.ads_ready, hw.sd_mounted, hw.power_present);

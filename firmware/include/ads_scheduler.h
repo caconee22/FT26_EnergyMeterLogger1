@@ -20,10 +20,8 @@ struct LatestReadings {
 
 // ADS 비동기 스케줄러 1회 진행 결과입니다.
 struct TickResult {
-  bool adc_error;              // ADS 통신/변환 오류 발생 여부입니다.
-  bool range_error;            // 즉시 range 오류 발생 여부입니다.
-  const char* adc_error_source;   // ADS 오류 채널 이름입니다.
-  const char* range_error_source; // range 오류 채널 이름입니다.
+  bool adc_error;    // ADS 통신/변환 오류 발생 여부입니다.
+  bool range_error;  // 즉시 range 오류 발생 여부입니다.
 };
 
 // ADS 비동기 스케줄러를 초기화하고 전류 zero offset을 적용합니다.

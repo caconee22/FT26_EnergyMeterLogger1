@@ -19,9 +19,6 @@ uint64_t cardSizeBytes();
 // 원본 펌웨어와 같은 규칙으로 로그 파일을 열고 헤더를 씁니다.
 bool openLogFile(const log_format::Header& header, char* filename, size_t filename_size);
 
-// 원본 로그 파일과 같은 base 이름으로 오류 txt 파일명을 준비합니다.
-void setErrorLogFileName(const log_format::BootTime& boot_time, const uint32_t uid[3]);
-
 // 열린 로그 파일에 측정 레코드 묶음을 씁니다.
 bool writeRecords(const log_format::Log* records, size_t count);
 
@@ -33,8 +30,5 @@ void closeLogFile();
 
 // 로그 파일이 열린 상태인지 반환합니다.
 bool logFileOpen();
-
-// SD가 마운트된 뒤 발생한 오류를 텍스트 파일에 즉시 추가합니다.
-bool appendErrorLog(uint32_t timestamp_ms, const char* source, const char* detail);
 
 }  // namespace ft26::storage

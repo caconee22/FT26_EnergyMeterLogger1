@@ -12,7 +12,6 @@ namespace {
 
 bool mounted = false;
 File log_file;
-char error_log_filename[96] = "/FT26_ERROR_LOG.txt";
 constexpr uint16_t kMaxRotatedFileIndex = 9999;
 
 // 원본 로그 파일명 규칙에서 확장자를 제외한 공통 이름을 만듭니다.
@@ -155,13 +154,6 @@ bool openLogFile(const log_format::Header& header, char* filename, size_t filena
          sizeof(header);
 }
 
-// 원본 로그 파일과 같은 base 이름으로 오류 txt 파일명을 준비합니다.
-void setErrorLogFileName(const log_format::BootTime& boot_time, const uint32_t uid[3]) {
-  rotateExistingSessionFile(boot_time, uid, "txt");
-  formatSessionFileName(error_log_filename, sizeof(error_log_filename), boot_time, uid,
-                        "txt");
-}
-
 // 원본 호환 16바이트 record 묶음을 열린 파일에 씁니다.
 bool writeRecords(const log_format::Log* records, size_t count) {
   if (!log_file || records == nullptr || count == 0) {
@@ -193,26 +185,6 @@ void closeLogFile() {
 // 로그 파일이 현재 열려 있는지 반환합니다.
 bool logFileOpen() {
   return static_cast<bool>(log_file);
-}
-
-// SD가 마운트된 뒤 발생한 오류를 텍스트 파일에 즉시 추가합니다.
-bool appendErrorLog(uint32_t timestamp_ms, const char* source, const char* detail) {
-  if (!mounted) {
-    return false;
-  }
-
-  File error_file = SD.open(error_log_filename, FILE_APPEND);
-  if (!error_file) {
-    return false;
-  }
-
-  error_file.printf("[%lu ms] %s: %s\n",
-                    static_cast<unsigned long>(timestamp_ms),
-                    source != nullptr ? source : "unknown",
-                    detail != nullptr ? detail : "");
-  error_file.flush();
-  error_file.close();
-  return true;
 }
 
 }  // namespace ft26::storage

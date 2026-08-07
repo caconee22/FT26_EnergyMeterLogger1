@@ -13,6 +13,7 @@ constexpr uint16_t SLOW_ON_TICKS = 2;          // 0.2 s
 constexpr uint16_t FAULT_ON_TICKS = 2;         // 0.2 s
 constexpr uint16_t FAULT_OFF_TICKS = 2;        // 0.2 s
 constexpr uint16_t FAULT_PAUSE_TICKS = 30;     // 3.0 s
+constexpr uint16_t SD_ACTIVITY_HOLD_TICKS = 2; // 마지막 write 뒤 0.2 s 동안 표시
 
 hw_timer_t* ledTimer = nullptr;
 portMUX_TYPE ledMux = portMUX_INITIALIZER_UNLOCKED;
@@ -25,6 +26,8 @@ volatile uint16_t modeTick = 0;
 volatile uint8_t faultPulseIndex = 0;
 volatile uint16_t faultTick = 0;
 volatile bool faultPause = false;
+volatile uint16_t sdActivityTicks = 0;
+volatile bool sdBlinkOnPhase = true;
 volatile bool started = false;
 
 void IRAM_ATTR writeLed(bool on) {
@@ -36,6 +39,11 @@ void IRAM_ATTR resetFaultPattern() {
   faultPulseIndex = 0;
   faultTick = 0;
   faultPause = false;
+}
+
+void IRAM_ATTR resetSdWritePattern() {
+  sdActivityTicks = 0;
+  sdBlinkOnPhase = true;
 }
 
 void IRAM_ATTR updateFaultPattern() {
@@ -94,6 +102,14 @@ void IRAM_ATTR onLedTimer() {
       modeTick = (modeTick + 1) % SLOW_PERIOD_TICKS;
       break;
     case Mode::SdWriteToggle:
+      if (sdActivityTicks == 0) {
+        writeLed(false);
+        sdBlinkOnPhase = true;
+        break;
+      }
+      writeLed(sdBlinkOnPhase);
+      sdBlinkOnPhase = !sdBlinkOnPhase;
+      --sdActivityTicks;
       break;
   }
 
@@ -121,6 +137,7 @@ void begin() {
   ledLevel = false;
   resetModeTimer();
   resetFaultPattern();
+  resetSdWritePattern();
   portEXIT_CRITICAL(&ledMux);
 
   if (!started) {
@@ -137,6 +154,9 @@ void setMode(Mode mode) {
   if (!ignoreNormalCommand()) {
     currentMode = mode;
     resetModeTimer();
+    if (mode != Mode::SdWriteToggle) {
+      resetSdWritePattern();
+    }
     if (mode == Mode::Off) {
       writeLed(false);
     } else if (mode == Mode::SolidOn) {
@@ -149,8 +169,11 @@ void setMode(Mode mode) {
 void notifySdWrite() {
   portENTER_CRITICAL(&ledMux);
   if (!ignoreNormalCommand()) {
+    if (currentMode != Mode::SdWriteToggle) {
+      resetSdWritePattern();
+    }
     currentMode = Mode::SdWriteToggle;
-    writeLed(!ledLevel);
+    sdActivityTicks = SD_ACTIVITY_HOLD_TICKS;
   }
   portEXIT_CRITICAL(&ledMux);
 }

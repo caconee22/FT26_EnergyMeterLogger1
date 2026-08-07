@@ -49,20 +49,6 @@ uint8_t channelForTask(AdsTask task) {
 }
 
 // ADS 측정 작업 이름을 오류 로그용 문자열로 변환합니다.
-const char* nameForTask(AdsTask task) {
-  switch (task) {
-    case AdsTask::HvVoltage:
-      return "hv-voltage";
-    case AdsTask::HvCurrent:
-      return "hv-current";
-    case AdsTask::LvVoltage:
-      return "lv";
-    case AdsTask::Temperature:
-      return "temperature";
-  }
-  return "unknown";
-}
-
 // LV/온도 주기와 HV 번갈이 규칙에 따라 다음 ADS 작업을 고릅니다.
 AdsTask chooseNextTask(uint32_t now_ms) {
   if (state.last_lv_ms == 0 ||
@@ -86,7 +72,6 @@ TickResult startNextConversion(uint32_t now_ms) {
   if (!sensors::startAdsChannel(channelForTask(state.task))) {
     state.running = false;
     result.adc_error = true;
-    result.adc_error_source = nameForTask(state.task);
     return result;
   }
 
@@ -120,7 +105,6 @@ TickResult applyResult(AdsTask task, int16_t raw, uint32_t now_ms) {
       if (state.latest.temperature.below_range ||
           state.latest.temperature.above_range) {
         result.range_error = true;
-        result.range_error_source = "temperature";
       }
       break;
   }
@@ -145,7 +129,6 @@ TickResult tick(uint32_t now_ms) {
   if (!sensors::adsReady()) {
     TickResult result = {};
     result.adc_error = true;
-    result.adc_error_source = "not-ready";
     return result;
   }
 
@@ -163,7 +146,6 @@ TickResult tick(uint32_t now_ms) {
       state.running = false;
       TickResult result = {};
       result.adc_error = true;
-      result.adc_error_source = nameForTask(state.task);
       return result;
     }
     return {};
@@ -174,7 +156,6 @@ TickResult tick(uint32_t now_ms) {
     state.running = false;
     TickResult result = {};
     result.adc_error = true;
-    result.adc_error_source = nameForTask(state.task);
     return result;
   }
 
