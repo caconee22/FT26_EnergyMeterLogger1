@@ -22,11 +22,15 @@ constexpr uint8_t PIN_UART_TX = 21;
 constexpr uint8_t I2C_ADDR_ADS1115 = 0x48;
 constexpr uint8_t I2C_ADDR_DS3231 = 0x68;
 
-constexpr uint32_t SERIAL_BAUD = 115200;
+constexpr uint32_t SERIAL_BAUD = 921600;
+constexpr uint8_t COM_FILE_LIST_MAX = 10;
+constexpr size_t COM_FILE_NAME_MAX = 96;
+constexpr size_t COM_READ_CHUNK_SIZE = 256;
 constexpr uint32_t I2C_CLOCK_HZ = 400000;
 constexpr uint16_t I2C_TIMEOUT_MS = 5;
 
 constexpr uint32_t POWER_SENSE_PRESENT_MV_MIN = 1800;
+constexpr uint32_t COM_MODE_POWER_WAIT_MS = 1000;
 constexpr uint32_t POWER_LOSS_CONFIRM_MS = 10;
 constexpr uint32_t SD_MUTEX_WAIT_MS = 2;
 constexpr uint32_t SD_EMERGENCY_MUTEX_WAIT_MS = 10;

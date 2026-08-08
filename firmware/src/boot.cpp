@@ -116,6 +116,27 @@ void initializePowerSense() {
   }
 }
 
+void refreshPowerSense() {
+  const sensors::PowerSenseReading reading = sensors::readPowerSense();
+  hw.power_raw = reading.raw;
+  hw.power_mv = reading.millivolts;
+  hw.power_present = reading.present;
+}
+
+bool waitForMainPower(uint32_t wait_ms) {
+  const uint32_t start_ms = millis();
+  while (millis() - start_ms < wait_ms) {
+    refreshPowerSense();
+    if (hw.power_present) {
+      return true;
+    }
+    delay(10);
+  }
+
+  refreshPowerSense();
+  return hw.power_present;
+}
+
 void initializeI2c() {
   Wire.begin(ft26::PIN_I2C_SDA, ft26::PIN_I2C_SCL);
   Wire.setClock(ft26::I2C_CLOCK_HZ);
@@ -192,11 +213,23 @@ void initializeSd() {
 const HardwareStatus& initializeHardware() {
   hw = {};
   hw.boot_millis = millis();
+  hw.mode = Mode::Record;
 
   initializeLed();
   initializeSerial();
   fillUidFromMac();
   initializePowerSense();
+
+  if (!hw.power_present && !waitForMainPower(ft26::COM_MODE_POWER_WAIT_MS)) {
+    hw.mode = Mode::Com;
+    status_led::clearFaultForManualReset();
+    status_led::setMode(status_led::Mode::SlowPulse);
+    logLinef("INFO", "COM mode power raw=%d approx=%lu mV",
+             hw.power_raw, static_cast<unsigned long>(hw.power_mv));
+    return hw;
+  }
+
+  status_led::clearFaultForManualReset();
   initializeI2c();
   initializeRtc();
   initializeAds();
@@ -216,6 +249,10 @@ const HardwareStatus& initializeHardware() {
 
 const HardwareStatus& status() {
   return hw;
+}
+
+Mode mode() {
+  return hw.mode;
 }
 
 }  // namespace ft26::boot
