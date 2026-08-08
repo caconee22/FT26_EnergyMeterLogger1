@@ -6,9 +6,10 @@
 #include <SPI.h>
 #include <Wire.h>
 #include <ctype.h>
-#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
+#include "boot.h"
 #include "config.h"
 #include "storage.h"
 
@@ -16,8 +17,8 @@ namespace ft26::com_mode {
 namespace {
 
 struct ComFileEntry {
-  char name[ft26::COM_FILE_NAME_MAX];  // COM 모드에서 전송할 SD 파일명입니다.
-  uint32_t size;                       // 파일 크기입니다.
+  char name[ft26::COM_FILE_NAME_MAX];
+  uint32_t size;
 };
 
 ComFileEntry file_list[ft26::COM_FILE_LIST_MAX] = {};
@@ -27,7 +28,6 @@ uint8_t command_len = 0;
 RTC_DS3231 rtc;
 bool rtc_ready = false;
 
-// 파일명이 로그 파일 확장자를 가지는지 확인합니다.
 bool isLogFileName(const char* name) {
   if (name == nullptr) {
     return false;
@@ -45,7 +45,6 @@ bool isLogFileName(const char* name) {
   return strncasecmp(dot, ".LOG", 4) == 0 && isdigit(dot[4]);
 }
 
-// 파일명 문자열을 기준으로 최신 파일이 먼저 오도록 비교합니다.
 bool isNewerFileName(const char* left, const char* right) {
   if (right == nullptr || right[0] == '\0') {
     return true;
@@ -56,7 +55,6 @@ bool isNewerFileName(const char* left, const char* right) {
   return strcmp(left, right) > 0;
 }
 
-// 앞쪽 '/'를 제거해 UART 응답에 쓰기 쉬운 파일명으로 만듭니다.
 const char* trimRootSlash(const char* name) {
   if (name != nullptr && name[0] == '/') {
     return name + 1;
@@ -64,7 +62,16 @@ const char* trimRootSlash(const char* name) {
   return name;
 }
 
-// 최신 10개 목록에 파일 하나를 삽입합니다.
+void makeRootPath(const char* name, char* path, size_t path_size) {
+  if (path == nullptr || path_size == 0) {
+    return;
+  }
+
+  path[0] = '\0';
+  strncat(path, "/", path_size - 1);
+  strncat(path, trimRootSlash(name), path_size - strlen(path) - 1);
+}
+
 void insertFileEntry(const char* name, uint32_t size) {
   if (name == nullptr || name[0] == '\0') {
     return;
@@ -88,11 +95,11 @@ void insertFileEntry(const char* name, uint32_t size) {
   }
 
   memset(&file_list[pos], 0, sizeof(file_list[pos]));
-  strncpy(file_list[pos].name, name, sizeof(file_list[pos].name) - 1);
+  strncpy(file_list[pos].name, trimRootSlash(name),
+          sizeof(file_list[pos].name) - 1);
   file_list[pos].size = size;
 }
 
-// SD 루트에서 로그 파일을 스캔하고 최신 10개만 RAM 목록에 저장합니다.
 void scanFiles() {
   file_count = 0;
   memset(file_list, 0, sizeof(file_list));
@@ -113,8 +120,7 @@ void scanFiles() {
     }
 
     if (!entry.isDirectory() && isLogFileName(entry.name())) {
-      const char* name = trimRootSlash(entry.name());
-      insertFileEntry(name, static_cast<uint32_t>(entry.size()));
+      insertFileEntry(entry.name(), static_cast<uint32_t>(entry.size()));
     }
     entry.close();
   }
@@ -122,14 +128,41 @@ void scanFiles() {
   root.close();
 }
 
-// COM 명령 비교를 대소문자 무시로 처리합니다.
 bool commandStartsWith(const char* line, const char* command) {
   const size_t len = strlen(command);
   return strncasecmp(line, command, len) == 0 &&
          (line[len] == '\0' || line[len] == ' ');
 }
 
-// 파일 목록을 ASCII로 전송합니다.
+void sendHello() {
+  scanFiles();
+
+  int year = 0;
+  int month = 0;
+  int day = 0;
+  int hour = 0;
+  int minute = 0;
+  int second = 0;
+
+  if (rtc_ready) {
+    const DateTime now = rtc.now();
+    year = now.year();
+    month = now.month();
+    day = now.day();
+    hour = now.hour();
+    minute = now.minute();
+    second = now.second();
+  }
+
+  const ft26::boot::HardwareStatus& status = ft26::boot::status();
+  Serial.printf(
+      "OK HELLO %08lX-%08lX-%08lX %04d-%02d-%02d-%02d-%02d-%02d-000 sd=%u rtc=%u files=%u\r\n",
+      static_cast<unsigned long>(status.uid[0]),
+      static_cast<unsigned long>(status.uid[1]),
+      static_cast<unsigned long>(status.uid[2]), year, month, day, hour, minute,
+      second, storage::cardMounted(), rtc_ready, file_count);
+}
+
 void sendList() {
   Serial.printf("OK LIST %u\r\n", file_count);
   for (uint8_t i = 0; i < file_count; ++i) {
@@ -139,7 +172,6 @@ void sendList() {
   Serial.print("END\r\n");
 }
 
-// READ 명령의 파일 번호를 파싱합니다.
 bool parseFileIndex(const char* line, uint8_t& index) {
   const char* space = strchr(line, ' ');
   if (space == nullptr) {
@@ -156,10 +188,9 @@ bool parseFileIndex(const char* line, uint8_t& index) {
   return true;
 }
 
-// 선택된 파일을 chunk 단위 binary stream으로 전송합니다.
 void sendFile(uint8_t index) {
-  char path[ft26::COM_FILE_NAME_MAX + 2] = "/";
-  strncat(path, file_list[index].name, sizeof(path) - strlen(path) - 1);
+  char path[ft26::COM_FILE_NAME_MAX + 2] = {};
+  makeRootPath(file_list[index].name, path, sizeof(path));
 
   File file = SD.open(path, FILE_READ);
   if (!file) {
@@ -170,7 +201,8 @@ void sendFile(uint8_t index) {
 
   const uint32_t total_size = static_cast<uint32_t>(file.size());
   uint32_t sent = 0;
-  Serial.printf("OK READ %u %lu\r\n", index, static_cast<unsigned long>(total_size));
+  Serial.printf("OK READ %u %lu\r\n", index,
+                static_cast<unsigned long>(total_size));
 
   uint8_t buffer[ft26::COM_READ_CHUNK_SIZE] = {};
   while (sent < total_size) {
@@ -213,8 +245,8 @@ void sendFile(uint8_t index) {
 
   file.close();
 }
-// 파일명과 같은 날짜 형식에서 RTC 시간을 파싱합니다.
-bool parseTime(const char* text, DateTime& out_time) {
+
+bool parseRtcTime(const char* text, DateTime& out_time) {
   int year = 0;
   int month = 0;
   int day = 0;
@@ -238,36 +270,88 @@ bool parseTime(const char* text, DateTime& out_time) {
   return true;
 }
 
-// TIME 명령으로 RTC를 PC 시간에 맞춥니다.
-void setTimeCommand(const char* line) {
+void setRtcCommand(const char* line) {
   const char* space = strchr(line, ' ');
   if (space == nullptr) {
-    Serial.print("ERR TIME FORMAT\r\n");
+    Serial.print("ERR RTC FORMAT\r\n");
     return;
   }
 
   if (!rtc_ready) {
-    Serial.print("ERR TIME RTC\r\n");
+    Serial.print("ERR RTC DEVICE\r\n");
     return;
   }
 
   DateTime time;
-  if (!parseTime(space + 1, time)) {
-    Serial.print("ERR TIME FORMAT\r\n");
+  if (!parseRtcTime(space + 1, time)) {
+    Serial.print("ERR RTC FORMAT\r\n");
     return;
   }
 
   rtc.adjust(time);
-  Serial.print("OK TIME\r\n");
+  Serial.print("OK RTC\r\n");
 }
 
-// SD 포맷 명령의 현재 응답입니다. 실제 FAT 포맷 구현은 별도 API 확정 후 추가합니다.
+void deleteLogFiles() {
+  if (!storage::cardMounted()) {
+    Serial.print("ERR DEL SD\r\n");
+    return;
+  }
+
+  File root = SD.open("/");
+  if (!root) {
+    Serial.print("ERR DEL OPEN\r\n");
+    return;
+  }
+
+  uint16_t deleted_count = 0;
+  char failed_name[ft26::COM_FILE_NAME_MAX] = {};
+
+  for (;;) {
+    File entry = root.openNextFile();
+    if (!entry) {
+      break;
+    }
+
+    char entry_name[ft26::COM_FILE_NAME_MAX] = {};
+    strncpy(entry_name, trimRootSlash(entry.name()), sizeof(entry_name) - 1);
+    const bool delete_entry = !entry.isDirectory() && isLogFileName(entry_name);
+    entry.close();
+
+    if (!delete_entry) {
+      continue;
+    }
+
+    char path[ft26::COM_FILE_NAME_MAX + 2] = {};
+    makeRootPath(entry_name, path, sizeof(path));
+    if (SD.remove(path)) {
+      ++deleted_count;
+    } else if (failed_name[0] == '\0') {
+      strncpy(failed_name, entry_name, sizeof(failed_name) - 1);
+    }
+  }
+
+  root.close();
+  scanFiles();
+
+  if (failed_name[0] != '\0') {
+    Serial.printf("ERR DEL REMOVE %s\r\n", failed_name);
+    return;
+  }
+
+  Serial.printf("OK DEL %u\r\n", deleted_count);
+}
+
 void formatCommand() {
   Serial.print("ERR FORMAT_UNSUPPORTED\r\n");
 }
 
-// 한 줄 ASCII 명령을 처리합니다.
 void handleCommand(char* line) {
+  if (commandStartsWith(line, "HELLO")) {
+    sendHello();
+    return;
+  }
+
   if (commandStartsWith(line, "LIST")) {
     scanFiles();
     sendList();
@@ -284,8 +368,13 @@ void handleCommand(char* line) {
     return;
   }
 
-  if (commandStartsWith(line, "TIME")) {
-    setTimeCommand(line);
+  if (commandStartsWith(line, "RTC")) {
+    setRtcCommand(line);
+    return;
+  }
+
+  if (commandStartsWith(line, "DEL")) {
+    deleteLogFiles();
     return;
   }
 
