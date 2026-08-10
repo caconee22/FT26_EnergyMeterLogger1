@@ -1,7 +1,8 @@
 <script setup>
-import { ref, onMounted, onUnmounted } from "vue";
+import { ref, onMounted, onUnmounted, watch } from "vue";
 import uPlot from "uplot";
 import { useNotification } from "../composables/useNotification";
+import { useDeviceStore } from "../stores/device";
 import { parse, calculateMetadata, msToHumanTime, formatTimestamp, formatUid } from "../lib/energymeter";
 import {
   wheelZoomPlugin,
@@ -12,6 +13,7 @@ import {
 } from "../lib/uplotPlugins";
 
 const notyf = useNotification();
+const deviceStore = useDeviceStore();
 const chartContainer = ref(null);
 const selectedFile = ref(null);
 const result = ref(null);
@@ -240,6 +242,20 @@ function handleFileSelect(e) {
   } else notyf.error("Unsupported file format");
 }
 
+function loadLogBytes(name, bytes) {
+  selectedFile.value = name;
+  alerts.value = { violations: [], warnings: [], errors: [] };
+  try {
+    result.value = parse(bytes);
+    setChartData(calculateMetadata(result.value, powerLimit.value));
+    notyf.success(`${name} loaded`);
+  } catch (err) {
+    uplot?.setData([]);
+    alerts.value.errors = [err.message];
+    notyf.error("Failed to parse downloaded log");
+  }
+}
+
 function setChartData(data) {
   uplot?.setData(data.processed);
   displayMetadata(data);
@@ -328,7 +344,16 @@ onMounted(() => {
   if (chartContainer.value) {
     resizeObserver.observe(chartContainer.value);
   }
+  if (deviceStore.downloadedLog?.data) {
+    loadLogBytes(deviceStore.downloadedLog.name, deviceStore.downloadedLog.data);
+  }
 });
+watch(
+  () => deviceStore.downloadedLog,
+  (log) => {
+    if (log?.data) loadLogBytes(log.name, log.data);
+  },
+);
 onUnmounted(() => {
   if (resizeObserver) {
     resizeObserver.disconnect();
