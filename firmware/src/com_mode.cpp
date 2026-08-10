@@ -213,6 +213,23 @@ void sendFile(uint8_t index) {
 
   file.close();
 }
+
+void deleteFile(uint8_t index) {
+  char path[ft26::COM_FILE_NAME_MAX + 2] = "/";
+  strncat(path, file_list[index].name, sizeof(path) - strlen(path) - 1);
+
+  char deleted_name[ft26::COM_FILE_NAME_MAX] = {};
+  strncpy(deleted_name, file_list[index].name, sizeof(deleted_name) - 1);
+
+  if (!SD.remove(path)) {
+    Serial.printf("ERR DEL REMOVE %u\r\n", index);
+    scanFiles();
+    return;
+  }
+
+  Serial.printf("OK DEL %u %s\r\n", index, deleted_name);
+  scanFiles();
+}
 // 파일명과 같은 날짜 형식에서 RTC 시간을 파싱합니다.
 bool parseTime(const char* text, DateTime& out_time) {
   int year = 0;
@@ -281,6 +298,17 @@ void handleCommand(char* line) {
       return;
     }
     sendFile(index);
+    return;
+  }
+
+  if (commandStartsWith(line, "DEL")) {
+    scanFiles();
+    uint8_t index = 0;
+    if (!parseFileIndex(line, index)) {
+      Serial.print("ERR DEL INDEX\r\n");
+      return;
+    }
+    deleteFile(index);
     return;
   }
 
