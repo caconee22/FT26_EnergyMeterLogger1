@@ -62,7 +62,8 @@ I2C devices:
 - ADS1115: `0x48`
 - DS3231M RTC: `0x68`
 
-Serial device protocol runs at `921600 bps` over USB CDC and physical UART.
+Serial device protocol runs at `921600 bps` over USB CDC and physical UART
+only when the device boots into COM mode.
 
 ## Logging Behavior
 
@@ -94,7 +95,7 @@ All commands are ASCII lines ending in `\n`.
 | --- | --- | --- |
 | `HELLO` | `OK HELLO <uid> <time> sd=<0/1> rtc=<0/1> files=<n> mode=<mode>` | Device identity and status |
 | `LIST` | `OK LIST <n>` + file rows + `END` | List available SD log files |
-| `READ <index>` | `OK READ <index> <bytes>` + `CHUNK` blocks + `OK DONE <bytes>` | Transfer a binary log file |
+| `READ <index>` | `OK READ <index> <bytes>`, then `CHUNK <offset> <size>` followed by exactly `<size>` raw binary bytes, repeated until `OK DONE <bytes>` | Transfer a binary log file |
 | `REED <index>` | same as `READ` | Legacy compatibility spelling |
 | `RTC yyyy-mm-dd-hh-mm-ss-ms` | `OK RTC` | Set RTC from viewer/PC time |
 | `TIME yyyy-mm-dd-hh-mm-ss-ms` | `OK RTC` | Alias for `RTC` |
@@ -103,8 +104,10 @@ All commands are ASCII lines ending in `\n`.
 Unsupported commands return `ERR COMMAND`. `FORMAT` is intentionally not
 implemented.
 
-While active recording is in progress, file-changing commands such as `READ`,
-`DEL`, and `RTC` are blocked with `ERR BUSY RECORDING`.
+COM mode is selected only during boot when the LV/drive power condition indicates
+that the logger should expose the serial device interface. If the firmware boots
+into Record mode, it does not later switch back into COM mode; serial output is
+used only for firmware log messages.
 
 ## Viewer
 
@@ -180,7 +183,7 @@ viewer to the paired port.
 ## Important Notes
 
 - FT26 no longer uses USB Mass Storage as the primary transfer path. Use the
-  viewer Device tab and Web Serial instead.
+  viewer Device tab and Web Serial while the device is booted in COM mode.
 - Logs use the original binary compatibility contract. Do not change the
   32-byte header or 16-byte record layout unless the viewer/parser is updated
   together.
@@ -201,4 +204,3 @@ This project is adapted from the original Formula Student Korea Electric Energy
 Meter concept, but the hardware communication path has been changed for FT26.
 The viewer keeps the original log-analysis purpose while adding a dedicated
 device-control layer for serial file transfer.
-

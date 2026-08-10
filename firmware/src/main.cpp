@@ -16,7 +16,6 @@ void setup() {
 
   const ft26::calibration::Result calibration_result =
       ft26::calibration::runHvZeroCalibration();
-  ft26::com_mode::begin(true);
   ft26::recorder::begin(calibration_result);
 }
 
@@ -27,7 +26,6 @@ void loop() {
     return;
   }
 
-  ft26::com_mode::tick();
   ft26::recorder::tick();
 }
 
