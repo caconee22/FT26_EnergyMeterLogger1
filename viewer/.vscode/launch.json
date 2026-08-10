@@ -1,0 +1,30 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "FT26 Virtual Device (COM2, samples)",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/tools/ft26_virtual_device.py",
+      "console": "integratedTerminal",
+      "args": [
+        "--port",
+        "COM2",
+        "--sd-dir",
+        "${workspaceFolder}/samples"
+      ]
+    },
+    {
+      "name": "FT26 Virtual Device Dry Run",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/tools/ft26_virtual_device.py",
+      "console": "integratedTerminal",
+      "args": [
+        "--dry-run",
+        "--sd-dir",
+        "${workspaceFolder}/samples"
+      ]
+    }
+  ]
+}

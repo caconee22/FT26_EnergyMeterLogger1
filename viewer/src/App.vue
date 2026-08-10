@@ -1,5 +1,5 @@
 <script setup>
-import LogAnalyzer from "./views/LogAnalyzer.vue";
+import NavTabs from "./components/NavTabs.vue";
 </script>
 
 <template>
@@ -10,11 +10,12 @@ import LogAnalyzer from "./views/LogAnalyzer.vue";
           <span class="logo-icon">FT26</span>
           <h1>FOURTOR EnergyMeter Logger</h1>
         </a>
+        <NavTabs />
       </div>
     </header>
 
     <main class="main-content">
-      <LogAnalyzer />
+      <router-view />
     </main>
   </div>
 </template>
@@ -37,12 +38,14 @@ import LogAnalyzer from "./views/LogAnalyzer.vue";
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 2rem;
 }
 
 .logo {
   display: flex;
   align-items: center;
   gap: 0.75rem;
+  flex-shrink: 0;
   text-decoration: none;
 }
 
@@ -80,6 +83,11 @@ import LogAnalyzer from "./views/LogAnalyzer.vue";
 
   .logo h1 {
     font-size: 1.05rem;
+  }
+
+  .header-content {
+    flex-wrap: wrap;
+    gap: 0.75rem;
   }
 
   .main-content {
