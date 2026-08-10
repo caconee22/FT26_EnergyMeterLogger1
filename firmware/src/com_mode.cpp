@@ -6,6 +6,7 @@
 #include <SPI.h>
 #include <Wire.h>
 #include <ctype.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -22,10 +23,31 @@ struct ComFileEntry {
 
 ComFileEntry file_list[ft26::COM_FILE_LIST_MAX] = {};
 uint8_t file_count = 0;
-char command_line[96] = {};
-uint8_t command_len = 0;
 RTC_DS3231 rtc;
 bool rtc_ready = false;
+bool sd_ready = false;
+
+struct ComPortState {
+  Stream* io;
+  char line[96];
+  uint8_t len;
+};
+
+ComPortState usb_port = {&Serial, {}, 0};
+ComPortState uart_port = {&Serial1, {}, 0};
+
+void writeText(Stream& io, const char* text) {
+  io.print(text);
+}
+
+void writeLinef(Stream& io, const char* format, ...) {
+  char buffer[160] = {};
+  va_list args;
+  va_start(args, format);
+  vsnprintf(buffer, sizeof(buffer), format, args);
+  va_end(args);
+  io.print(buffer);
+}
 
 // 파일명이 로그 파일 확장자를 가지는지 확인합니다.
 bool isLogFileName(const char* name) {
@@ -130,13 +152,13 @@ bool commandStartsWith(const char* line, const char* command) {
 }
 
 // 파일 목록을 ASCII로 전송합니다.
-void sendList() {
-  Serial.printf("OK LIST %u\r\n", file_count);
+void sendList(Stream& io) {
+  writeLinef(io, "OK LIST %u\r\n", file_count);
   for (uint8_t i = 0; i < file_count; ++i) {
-    Serial.printf("%u %s %lu\r\n", i, file_list[i].name,
-                  static_cast<unsigned long>(file_list[i].size));
+    writeLinef(io, "%u %s %lu\r\n", i, file_list[i].name,
+               static_cast<unsigned long>(file_list[i].size));
   }
-  Serial.print("END\r\n");
+  writeText(io, "END\r\n");
 }
 
 // READ 명령의 파일 번호를 파싱합니다.
@@ -157,20 +179,20 @@ bool parseFileIndex(const char* line, uint8_t& index) {
 }
 
 // 선택된 파일을 chunk 단위 binary stream으로 전송합니다.
-void sendFile(uint8_t index) {
+void sendFile(Stream& io, uint8_t index) {
   char path[ft26::COM_FILE_NAME_MAX + 2] = "/";
   strncat(path, file_list[index].name, sizeof(path) - strlen(path) - 1);
 
   File file = SD.open(path, FILE_READ);
   if (!file) {
-    Serial.printf("ERR READ_OPEN %u\r\n", index);
+    writeLinef(io, "ERR READ_OPEN %u\r\n", index);
     scanFiles();
     return;
   }
 
   const uint32_t total_size = static_cast<uint32_t>(file.size());
   uint32_t sent = 0;
-  Serial.printf("OK READ %u %lu\r\n", index, static_cast<unsigned long>(total_size));
+  writeLinef(io, "OK READ %u %lu\r\n", index, static_cast<unsigned long>(total_size));
 
   uint8_t buffer[ft26::COM_READ_CHUNK_SIZE] = {};
   while (sent < total_size) {
@@ -181,21 +203,21 @@ void sendFile(uint8_t index) {
 
     const int count = file.read(buffer, request_size);
     if (count <= 0) {
-      Serial.printf("ERR READ_FAULT SD_READ %lu %lu\r\n",
-                    static_cast<unsigned long>(sent),
-                    static_cast<unsigned long>(total_size));
+      writeLinef(io, "ERR READ_FAULT SD_READ %lu %lu\r\n",
+                 static_cast<unsigned long>(sent),
+                 static_cast<unsigned long>(total_size));
       file.close();
       scanFiles();
       return;
     }
 
-    Serial.printf("CHUNK %lu %d\r\n", static_cast<unsigned long>(sent), count);
-    const size_t written = Serial.write(buffer, static_cast<size_t>(count));
-    Serial.flush();
+    writeLinef(io, "CHUNK %lu %d\r\n", static_cast<unsigned long>(sent), count);
+    const size_t written = io.write(buffer, static_cast<size_t>(count));
+    io.flush();
     if (written != static_cast<size_t>(count)) {
-      Serial.printf("ERR READ_FAULT SERIAL_WRITE %lu %lu\r\n",
-                    static_cast<unsigned long>(sent),
-                    static_cast<unsigned long>(total_size));
+      writeLinef(io, "ERR READ_FAULT SERIAL_WRITE %lu %lu\r\n",
+                 static_cast<unsigned long>(sent),
+                 static_cast<unsigned long>(total_size));
       file.close();
       return;
     }
@@ -204,14 +226,54 @@ void sendFile(uint8_t index) {
   }
 
   if (sent != total_size) {
-    Serial.printf("ERR READ_FAULT SIZE_MISMATCH %lu %lu\r\n",
-                  static_cast<unsigned long>(sent),
-                  static_cast<unsigned long>(total_size));
+    writeLinef(io, "ERR READ_FAULT SIZE_MISMATCH %lu %lu\r\n",
+               static_cast<unsigned long>(sent),
+               static_cast<unsigned long>(total_size));
   } else {
-    Serial.printf("OK DONE %lu\r\n", static_cast<unsigned long>(sent));
+    writeLinef(io, "OK DONE %lu\r\n", static_cast<unsigned long>(sent));
   }
 
   file.close();
+}
+
+void deleteFile(Stream& io, uint8_t index) {
+  char path[ft26::COM_FILE_NAME_MAX + 2] = "/";
+  strncat(path, file_list[index].name, sizeof(path) - strlen(path) - 1);
+
+  char deleted_name[ft26::COM_FILE_NAME_MAX] = {};
+  strncpy(deleted_name, file_list[index].name, sizeof(deleted_name) - 1);
+
+  if (!SD.remove(path)) {
+    writeLinef(io, "ERR DEL REMOVE %u\r\n", index);
+    scanFiles();
+    return;
+  }
+
+  writeLinef(io, "OK DEL %u %s\r\n", index, deleted_name);
+  scanFiles();
+}
+
+void sendHello(Stream& io) {
+  scanFiles();
+
+  if (!rtc_ready) {
+    writeLinef(io, "OK HELLO FT26-UNKNOWN 1970-01-01-00-00-00-000 sd=%u rtc=0 files=%u\r\n",
+               sd_ready ? 1 : 0, file_count);
+    return;
+  }
+
+  const DateTime now = rtc.now();
+  writeLinef(io,
+             "OK HELLO FT26-COM 20%02u-%02u-%02u-%02u-%02u-%02u-%03u sd=%u rtc=1 files=%u\r\n",
+             static_cast<unsigned>(now.year() >= 2000 ? now.year() - 2000 : 0),
+             static_cast<unsigned>(now.month()),
+             static_cast<unsigned>(now.day()),
+             static_cast<unsigned>(now.hour()),
+             static_cast<unsigned>(now.minute()),
+             static_cast<unsigned>(now.second()),
+             static_cast<unsigned>(millis() % 1000),
+             sd_ready ? 1 : 0,
+             file_count);
 }
 // 파일명과 같은 날짜 형식에서 RTC 시간을 파싱합니다.
 bool parseTime(const char* text, DateTime& out_time) {
@@ -239,102 +301,120 @@ bool parseTime(const char* text, DateTime& out_time) {
 }
 
 // TIME 명령으로 RTC를 PC 시간에 맞춥니다.
-void setTimeCommand(const char* line) {
+void setTimeCommand(Stream& io, const char* line) {
   const char* space = strchr(line, ' ');
   if (space == nullptr) {
-    Serial.print("ERR TIME FORMAT\r\n");
+    writeText(io, "ERR RTC FORMAT\r\n");
     return;
   }
 
   if (!rtc_ready) {
-    Serial.print("ERR TIME RTC\r\n");
+    writeText(io, "ERR RTC DEVICE\r\n");
     return;
   }
 
   DateTime time;
   if (!parseTime(space + 1, time)) {
-    Serial.print("ERR TIME FORMAT\r\n");
+    writeText(io, "ERR RTC FORMAT\r\n");
     return;
   }
 
   rtc.adjust(time);
-  Serial.print("OK TIME\r\n");
+  writeText(io, "OK RTC\r\n");
 }
 
 // SD 포맷 명령의 현재 응답입니다. 실제 FAT 포맷 구현은 별도 API 확정 후 추가합니다.
-void formatCommand() {
-  Serial.print("ERR FORMAT_UNSUPPORTED\r\n");
-}
-
 // 한 줄 ASCII 명령을 처리합니다.
-void handleCommand(char* line) {
+void handleCommand(Stream& io, char* line) {
+  if (commandStartsWith(line, "HELLO")) {
+    sendHello(io);
+    return;
+  }
+
   if (commandStartsWith(line, "LIST")) {
     scanFiles();
-    sendList();
+    sendList(io);
     return;
   }
 
   if (commandStartsWith(line, "READ") || commandStartsWith(line, "REED")) {
     uint8_t index = 0;
     if (!parseFileIndex(line, index)) {
-      Serial.print("ERR READ INDEX\r\n");
+      writeText(io, "ERR READ INDEX\r\n");
       return;
     }
-    sendFile(index);
+    sendFile(io, index);
     return;
   }
 
-  if (commandStartsWith(line, "TIME")) {
-    setTimeCommand(line);
+  if (commandStartsWith(line, "DEL")) {
+    scanFiles();
+    uint8_t index = 0;
+    if (!parseFileIndex(line, index)) {
+      writeText(io, "ERR DEL INDEX\r\n");
+      return;
+    }
+    deleteFile(io, index);
     return;
   }
 
-  if (commandStartsWith(line, "FORMAT")) {
-    formatCommand();
+  if (commandStartsWith(line, "RTC") || commandStartsWith(line, "TIME")) {
+    setTimeCommand(io, line);
     return;
   }
 
-  Serial.print("ERR COMMAND\r\n");
+  writeText(io, "ERR COMMAND\r\n");
 }
 
 }  // namespace
 
 void begin() {
+  Serial1.begin(ft26::SERIAL_BAUD, SERIAL_8N1, ft26::PIN_UART_RX,
+                ft26::PIN_UART_TX);
+
   Wire.begin(ft26::PIN_I2C_SDA, ft26::PIN_I2C_SCL);
   Wire.setClock(ft26::I2C_CLOCK_HZ);
   Wire.setTimeOut(ft26::I2C_TIMEOUT_MS);
   rtc_ready = rtc.begin(&Wire);
 
-  const bool sd_ok = storage::beginCard();
+  sd_ready = storage::beginCard();
   scanFiles();
-  Serial.printf("COM READY baud=%lu sd=%u rtc=%u files=%u\r\n",
-                static_cast<unsigned long>(ft26::SERIAL_BAUD), sd_ok, rtc_ready,
-                file_count);
+  writeLinef(Serial, "COM READY baud=%lu sd=%u rtc=%u files=%u\r\n",
+             static_cast<unsigned long>(ft26::SERIAL_BAUD), sd_ready ? 1 : 0,
+             rtc_ready ? 1 : 0, file_count);
+  writeLinef(Serial1, "COM READY baud=%lu sd=%u rtc=%u files=%u\r\n",
+             static_cast<unsigned long>(ft26::SERIAL_BAUD), sd_ready ? 1 : 0,
+             rtc_ready ? 1 : 0, file_count);
 }
 
-void tick() {
-  while (Serial.available() > 0) {
-    const char c = static_cast<char>(Serial.read());
+void processPort(ComPortState& port) {
+  while (port.io->available() > 0) {
+    const char c = static_cast<char>(port.io->read());
     if (c == '\r') {
       continue;
     }
 
     if (c == '\n') {
-      command_line[command_len] = '\0';
-      if (command_len > 0) {
-        handleCommand(command_line);
+      port.line[port.len] = '\0';
+      if (port.len > 0) {
+        handleCommand(*port.io, port.line);
       }
-      command_len = 0;
+      port.len = 0;
       return;
     }
 
-    if (command_len < sizeof(command_line) - 1) {
-      command_line[command_len++] = c;
+    if (port.len < sizeof(port.line) - 1) {
+      port.line[port.len++] = c;
     } else {
-      command_len = 0;
-      Serial.print("ERR LINE_TOO_LONG\r\n");
+      port.len = 0;
+      writeText(*port.io, "ERR LINE_TOO_LONG\r\n");
     }
   }
+}
+
+void tick() {
+  processPort(usb_port);
+  processPort(uart_port);
 }
 
 }  // namespace ft26::com_mode
