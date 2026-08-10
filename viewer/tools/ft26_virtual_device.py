@@ -122,15 +122,29 @@ def handle_command(port: serial.Serial, line: str, args) -> None:
         return
 
     if line.upper().startswith("DEL"):
+        parts = line.split()
+        if len(parts) != 2 or not parts[1].isdigit():
+            write_ascii(port, "ERR DEL INDEX\r\n")
+            print("> ERR DEL INDEX", flush=True)
+            return
+
         files = scan_sd_dir(args.sd_dir)
-        if args.delete_enabled:
-            for entry in files:
-                entry["path"].unlink()
-            deleted = len(files)
-        else:
-            deleted = 0
-        write_ascii(port, f"OK DEL {deleted}\r\n")
-        print(f"> OK DEL {deleted}", flush=True)
+        index = int(parts[1])
+        entry = next((item for item in files if item["index"] == index), None)
+        if entry is None:
+            write_ascii(port, "ERR DEL INDEX\r\n")
+            print("> ERR DEL INDEX", flush=True)
+            return
+
+        try:
+            entry["path"].unlink()
+        except OSError as error:
+            write_ascii(port, "ERR DEL REMOVE\r\n")
+            print(f"> ERR DEL REMOVE {error}", flush=True)
+            return
+
+        write_ascii(port, f"OK DEL {index} {entry['name']}\r\n")
+        print(f"> OK DEL {index} {entry['name']}", flush=True)
         return
 
     write_ascii(port, "ERR COMMAND\r\n")
@@ -163,7 +177,7 @@ def parse_args():
     parser.add_argument("--sd-dir", default="./samples", type=Path, help="Folder to expose as the SD card root.")
     parser.add_argument("--baud", default=DEFAULT_BAUD, type=int, help="Serial baud rate.")
     parser.add_argument("--chunk-size", default=DEFAULT_CHUNK_SIZE, type=int, help="READ transfer chunk size.")
-    parser.add_argument("--delete-enabled", action="store_true", help="Allow DEL to remove log files from sd-dir.")
+    parser.add_argument("--delete-enabled", action="store_true", help="Compatibility option; DEL index removes only the selected file.")
     parser.add_argument("--dry-run", action="store_true", help="Print HELLO/LIST output without opening a port.")
     parser.add_argument("--list-ports", action="store_true", help="List available serial ports and exit.")
     args = parser.parse_args()
