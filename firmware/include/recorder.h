@@ -21,6 +21,9 @@ struct Status {
   uint32_t calibrated_ms;            // calibration 완료 시각입니다.
   uint32_t records_captured;         // 생성한 전체 record 수입니다.
   uint32_t records_written;          // SD에 기록한 전체 record 수입니다.
+  uint32_t records_dropped;
+  uint32_t records_skipped_invalid;
+  uint32_t sd_recovery_count;
   uint16_t buffered_records;         // 초기 RAM prebuffer에 쌓인 record 수입니다.
   uint16_t prebuffer_dumped_records; // SD로 내보낸 초기 RAM record 수입니다.
   uint16_t queued_records;           // SD writer가 아직 쓰지 못한 RAM record 수입니다.
@@ -31,6 +34,7 @@ struct Status {
   bool calibrated;                   // calibration 완료 여부입니다.
   bool adc_error;                    // ADS1115 읽기 실패 여부입니다.
   bool sd_error;                     // SD 파일 작업 실패 여부입니다.
+  bool sd_recovering;
   bool range_error;                  // 측정 범위 오류 여부입니다.
   bool power_lost;                   // 입력 전원 차단이 감지됐는지 여부입니다.
 };
@@ -42,6 +46,9 @@ void begin(const calibration::Result& calibration_result);
 void tick();
 
 // recorder의 현재 상태를 반환합니다.
-const Status& status();
+Status status();
+
+// Return true while the recorder tasks are active.
+bool active();
 
 }  // namespace ft26::recorder

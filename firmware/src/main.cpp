@@ -10,12 +10,13 @@
 void setup() {
   const ft26::boot::HardwareStatus& hardware = ft26::boot::initializeHardware();
   if (hardware.mode == ft26::boot::Mode::Com) {
-    ft26::com_mode::begin();
+    ft26::com_mode::begin(false);
     return;
   }
 
   const ft26::calibration::Result calibration_result =
       ft26::calibration::runHvZeroCalibration();
+  ft26::com_mode::begin(true);
   ft26::recorder::begin(calibration_result);
 }
 
@@ -26,6 +27,7 @@ void loop() {
     return;
   }
 
+  ft26::com_mode::tick();
   ft26::recorder::tick();
 }
 

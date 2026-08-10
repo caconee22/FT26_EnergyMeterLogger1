@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import re
 import sys
 import time
 from datetime import datetime
@@ -22,7 +23,11 @@ UID = "12345678-90ABCDEF-00000001"
 
 def is_log_file(path: Path) -> bool:
     suffix = path.suffix.lower()
-    return suffix == ".log" or (suffix.startswith(".log") and suffix[4:].isdigit())
+    return suffix == ".log" or (
+        suffix.startswith(".log")
+        and suffix[4:].isdigit()
+        and int(suffix[4:]) > 0
+    )
 
 
 def scan_sd_dir(sd_dir: Path):
@@ -30,7 +35,12 @@ def scan_sd_dir(sd_dir: Path):
         raise FileNotFoundError(f"SD folder not found: {sd_dir}")
 
     files = [p for p in sd_dir.iterdir() if p.is_file() and is_log_file(p)]
-    files.sort(key=lambda p: p.name, reverse=True)
+    def sort_key(path: Path):
+        suffix = path.suffix.lower()
+        recovery_index = int(suffix[4:]) if len(suffix) > 4 else 0
+        return (path.stem, recovery_index, path.name)
+
+    files.sort(key=sort_key, reverse=True)
 
     return [
         {
@@ -85,14 +95,14 @@ def send_file(port: serial.Serial, file_entry: dict, chunk_size: int) -> None:
 def handle_command(port: serial.Serial, line: str, args) -> None:
     print(f"< {line}", flush=True)
 
-    if line.upper().startswith("HELLO"):
+    if line.upper() == "HELLO":
         files = scan_sd_dir(args.sd_dir)
         response = f"OK HELLO {UID} {device_time_text()} sd=1 rtc=1 files={len(files)}\r\n"
         write_ascii(port, response)
         print(f"> {response.strip()}", flush=True)
         return
 
-    if line.upper().startswith("LIST"):
+    if line.upper() == "LIST":
         files = scan_sd_dir(args.sd_dir)
         write_ascii(port, f"OK LIST {len(files)}\r\n")
         for entry in files:
@@ -102,7 +112,7 @@ def handle_command(port: serial.Serial, line: str, args) -> None:
         return
 
     parts = line.split()
-    if len(parts) == 2 and parts[0].upper() == "READ" and parts[1].isdigit():
+    if len(parts) == 2 and parts[0].upper() in {"READ", "REED"} and parts[1].isdigit():
         files = scan_sd_dir(args.sd_dir)
         index = int(parts[1])
         entry = next((item for item in files if item["index"] == index), None)
@@ -116,13 +126,22 @@ def handle_command(port: serial.Serial, line: str, args) -> None:
         print(f"> OK DONE {entry['size']}", flush=True)
         return
 
-    if line.upper().startswith("RTC"):
+    if len(parts) == 2 and parts[0].upper() in {"RTC", "TIME"}:
+        try:
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}-\d{3}", parts[1]):
+                raise ValueError
+            parsed_time = datetime.strptime(parts[1], "%Y-%m-%d-%H-%M-%S-%f")
+            if not 2020 <= parsed_time.year <= 2099:
+                raise ValueError
+        except ValueError:
+            write_ascii(port, "ERR RTC FORMAT\r\n")
+            print("> ERR RTC FORMAT", flush=True)
+            return
         write_ascii(port, "OK RTC\r\n")
         print("> OK RTC", flush=True)
         return
 
-    if line.upper().startswith("DEL"):
-        parts = line.split()
+    if parts and parts[0].upper() == "DEL":
         if len(parts) != 2 or not parts[1].isdigit():
             write_ascii(port, "ERR DEL INDEX\r\n")
             print("> ERR DEL INDEX", flush=True)
@@ -139,7 +158,7 @@ def handle_command(port: serial.Serial, line: str, args) -> None:
         try:
             entry["path"].unlink()
         except OSError as error:
-            write_ascii(port, "ERR DEL REMOVE\r\n")
+            write_ascii(port, f"ERR DEL REMOVE {index}\r\n")
             print(f"> ERR DEL REMOVE {error}", flush=True)
             return
 

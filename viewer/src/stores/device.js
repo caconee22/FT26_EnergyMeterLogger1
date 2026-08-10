@@ -380,7 +380,7 @@ export const useDeviceStore = defineStore("device", () => {
     if (!connected.value) throw new Error("Connect a device before sending commands");
     const [head] = trimmed.split(/\s+/);
     const upperHead = head.toUpperCase();
-    if (upperHead === "READ") {
+    if (upperHead === "READ" || upperHead === "REED") {
       throw new Error("Use the Receive buttons for READ so binary log data stays synchronized.");
     }
 

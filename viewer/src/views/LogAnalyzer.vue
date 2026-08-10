@@ -272,6 +272,7 @@ function displayMetadata(logs) {
   metadata.value.voltage = `${logs.max_voltage.toFixed(1)} V`;
   metadata.value.current = `${logs.max_current.toFixed(1)} A`;
   alerts.value.warnings =
+    logs.header.datetime < Number(new Date(2020, 0)) ||
     logs.header.datetime > Number(new Date(2099, 0))
       ? ["Invalid RTC date detected. Sync the clock in the Device configuration tab."]
       : [];

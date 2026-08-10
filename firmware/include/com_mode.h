@@ -2,8 +2,9 @@
 
 namespace ft26::com_mode {
 
-// COM 모드에서 SD 파일 목록을 준비하고 UART 명령 대기를 시작합니다.
-void begin();
+// Start USB/UART command processing. Recording mode keeps destructive and
+// long-running commands disabled so logging cannot be interrupted.
+void begin(bool recording_mode = false);
 
 // COM 모드 UART ASCII 명령을 처리합니다.
 void tick();

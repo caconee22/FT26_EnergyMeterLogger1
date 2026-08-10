@@ -10,6 +10,10 @@ namespace ft26::storage {
 // microSD SPI 버스를 시작하고 카드를 마운트합니다. 파일은 만들지 않습니다.
 bool beginCard();
 
+// Serialize all filesystem access shared by recorder and COM tasks.
+bool lockCard(uint32_t timeout_ms);
+void unlockCard();
+
 // SD card를 다시 마운트합니다. 기존 파일은 믿지 않고 닫은 뒤 시도합니다.
 bool remountCard();
 

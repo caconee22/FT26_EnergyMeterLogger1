@@ -20,11 +20,14 @@ namespace {
 
 Status recorder_status = {};
 log_format::Log prelog_records[ft26::PRELOG_RECORD_CAPACITY] = {};
+log_format::Log pending_records[ft26::STORAGE_PENDING_RECORD_CAPACITY] = {};
+size_t pending_record_count = 0;
 uint32_t next_record_ms = 0;
 uint32_t last_sync_ms = 0;
 uint32_t file_start_reference_ms = 0;
 uint16_t prebuffer_dump_index = 0;
 uint32_t power_missing_since_ms = 0;
+bool power_shutdown_complete = false;
 int32_t current_zero_uv = measurements::HV_CURRENT_ZERO_UV;
 int16_t hv_voltage_zero_deci_v = 0;
 char current_filename[96] = {};
@@ -32,7 +35,6 @@ uint32_t hv_current_range_since_ms = 0;
 uint32_t hv_voltage_range_since_ms = 0;
 TaskHandle_t measurement_task = nullptr;
 TaskHandle_t storage_task = nullptr;
-SemaphoreHandle_t sd_mutex = nullptr;
 portMUX_TYPE recorder_mux = portMUX_INITIALIZER_UNLOCKED;
 bool tasks_started = false;
 bool sd_recovery_mode = false;
@@ -42,9 +44,11 @@ bool dumpPrebufferChunk(uint32_t now);
 bool flushRemainingPrebuffer(bool report_errors);
 bool drainStorageQueueChunk(uint32_t now);
 bool flushStorageQueue(bool report_errors);
-void closeOpenLogForPowerLoss();
 bool isFileStarted();
 void enterSdRecoveryMode();
+bool isSdRecoveryMode();
+bool startFileLogging(uint32_t now);
+bool tryRecoverSd(uint32_t now, bool force);
 
 // 시리얼에 한 줄짜리 상태/오류 로그를 출력합니다.
 void logLine(const char* level, const char* message) {
@@ -65,20 +69,19 @@ void logLinef(const char* level, const char* fmt, ...) {
 void markAdcError() {
   portENTER_CRITICAL(&recorder_mux);
   recorder_status.adc_error = true;
-  recorder_status.state = State::Fault;
   portEXIT_CRITICAL(&recorder_mux);
   status_led::setFault(status_led::FaultGroup::Adc);
 }
 
 // SD 파일 작업 오류를 상태와 LED fault에 반영합니다.
 void markSdError(const char* action) {
-  (void)action;
   portENTER_CRITICAL(&recorder_mux);
   recorder_status.sd_error = true;
-  recorder_status.state = State::Fault;
+  recorder_status.sd_recovering = true;
   portEXIT_CRITICAL(&recorder_mux);
   enterSdRecoveryMode();
   status_led::setFault(status_led::FaultGroup::Sd);
+  logLinef("ERROR", "SD operation failed: %s", action);
 }
 
 // 측정 범위 오류를 상태와 LED fault에 반영합니다.
@@ -91,41 +94,26 @@ void markRangeError() {
 
 // SD writer queue 상태를 status에 반영합니다.
 void updateStorageQueueStatus() {
-  recorder_status.queued_records = record_queue::count();
+  const size_t queued = record_queue::count() + pending_record_count;
+  recorder_status.queued_records =
+      queued > UINT16_MAX ? UINT16_MAX : static_cast<uint16_t>(queued);
+  recorder_status.records_dropped = record_queue::droppedCount();
 }
 
 // 100Hz 측정 루프가 SD에 직접 접근하지 않도록 record를 RAM queue에 넣습니다.
 bool enqueueStorageRecord(const log_format::Log& record) {
-  record_queue::push(record);
+  const bool kept_all_records = record_queue::push(record);
   updateStorageQueueStatus();
-  return true;
+  return kept_all_records;
 }
 
 // 입력 전원 차단 시 파일을 마무리하고 LED를 끕니다.
 bool lockSd(uint32_t timeout_ms) {
-  if (sd_mutex == nullptr) {
-    return true;
-  }
-  return xSemaphoreTake(sd_mutex, pdMS_TO_TICKS(timeout_ms)) == pdTRUE;
+  return storage::lockCard(timeout_ms);
 }
 
 void unlockSd() {
-  if (sd_mutex != nullptr) {
-    xSemaphoreGive(sd_mutex);
-  }
-}
-
-void closeOpenLogForPowerLoss() {
-  if (!storage::logFileOpen()) {
-    return;
-  }
-
-  if (isFileStarted()) {
-    flushRemainingPrebuffer(false);
-    flushStorageQueue(false);
-  }
-  storage::syncLogFile();
-  storage::closeLogFile();
+  storage::unlockCard();
 }
 
 bool isPowerLost() {
@@ -158,16 +146,34 @@ void latchPowerLost() {
 
 // SD 오류 뒤에는 기존 파일을 믿지 않고 새 LOGn 파일을 열 때까지 RAM queue에만 쌓습니다.
 void enterSdRecoveryMode() {
+  portENTER_CRITICAL(&recorder_mux);
   sd_recovery_mode = true;
+  recorder_status.sd_recovering = true;
+  portEXIT_CRITICAL(&recorder_mux);
+}
+
+bool isSdRecoveryMode() {
+  portENTER_CRITICAL(&recorder_mux);
+  const bool recovering = sd_recovery_mode;
+  portEXIT_CRITICAL(&recorder_mux);
+  return recovering;
 }
 
 void handlePowerLoss() {
-  if (isPowerLost()) {
+  if (power_shutdown_complete) {
     return;
   }
 
-  latchPowerLost();
+  if (!isPowerLost()) {
+    latchPowerLost();
+  }
   status_led::powerFailOff();
+
+  if (!isFileStarted()) {
+    logLine("INFO", "Power loss before log start; buffered records discarded");
+    power_shutdown_complete = true;
+    return;
+  }
 
   bool flushed = true;
   bool synced = true;
@@ -178,14 +184,27 @@ void handlePowerLoss() {
     return;
   }
 
+  if (!storage::logFileOpen() && isSdRecoveryMode()) {
+    tryRecoverSd(millis(), true);
+  }
+
   const bool log_open = storage::logFileOpen();
   if (log_open) {
     if (isFileStarted()) {
-      flushed = flushRemainingPrebuffer(false);
-      flushed = flushStorageQueue(false) && flushed;
+      flushed = flushRemainingPrebuffer(true);
+      flushed = flushStorageQueue(true) && flushed;
     }
     synced = storage::syncLogFile();
+    if (!synced) {
+      markSdError("power loss sync");
+    }
     storage::closeLogFile();
+  } else {
+    portENTER_CRITICAL(&recorder_mux);
+    const bool buffered_data = recorder_status.buffered_records > 0;
+    portEXIT_CRITICAL(&recorder_mux);
+    flushed = !buffered_data && pending_record_count == 0 &&
+              record_queue::empty();
   }
   unlockSd();
 
@@ -195,6 +214,7 @@ void handlePowerLoss() {
     portEXIT_CRITICAL(&recorder_mux);
     return;
   }
+  power_shutdown_complete = true;
 }
 
 // 로그 헤더용 calibration 값을 uint16 범위로 제한합니다.
@@ -231,32 +251,6 @@ log_format::Header makeCurrentHeader(uint32_t now) {
       clampUint16(current_zero_uv / 1000), hw.boot_time);
 }
 
-// 파일을 열지 못한 경우 초기 prebuffer의 최신 10초만 SD writer queue로 옮깁니다.
-void moveRecentPrebufferToQueue() {
-  record_queue::reset();
-
-  uint16_t buffered = 0;
-  portENTER_CRITICAL(&recorder_mux);
-  buffered = recorder_status.buffered_records;
-  portEXIT_CRITICAL(&recorder_mux);
-
-  uint16_t start = 0;
-  if (buffered > ft26::STORAGE_QUEUE_RECORD_CAPACITY) {
-    start = buffered - ft26::STORAGE_QUEUE_RECORD_CAPACITY;
-  }
-
-  for (uint16_t i = start; i < buffered; ++i) {
-    record_queue::push(prelog_records[i]);
-  }
-
-  portENTER_CRITICAL(&recorder_mux);
-  recorder_status.file_started = true;
-  recorder_status.prebuffer_dump_done = true;
-  recorder_status.prebuffer_dumped_records = buffered;
-  portEXIT_CRITICAL(&recorder_mux);
-  updateStorageQueueStatus();
-}
-
 // 일정 시간 이상 유지된 range 상태만 fault로 확정합니다.
 void updateHeldRangeFault(bool active, uint32_t hold_ms, uint32_t now,
                           uint32_t& since_ms) {
@@ -281,7 +275,7 @@ bool appendRecord(const log_format::Log& record) {
   bool prebuffer_full = false;
 
   portENTER_CRITICAL(&recorder_mux);
-  if (recorder_status.file_started) {
+  if (recorder_status.file_started || sd_recovery_mode) {
     use_queue = true;
   } else {
     if (recorder_status.buffered_records < ft26::PRELOG_RECORD_CAPACITY) {
@@ -302,11 +296,6 @@ bool appendRecord(const log_format::Log& record) {
   return use_queue ? enqueueStorageRecord(record) : true;
 }
 
-// 쌓여 있는 write batch를 SD 파일에 기록합니다.
-bool flushBatch() {
-  return true;
-}
-
 // 20초 지연 후 로그 파일을 만들고 header와 prebuffer를 기록합니다.
 bool startFileLogging(uint32_t now) {
   if (isFileStarted()) {
@@ -316,14 +305,15 @@ bool startFileLogging(uint32_t now) {
   const log_format::Header header = makeCurrentHeader(now);
 
   if (!storage::openLogFile(header, current_filename, sizeof(current_filename))) {
-    moveRecentPrebufferToQueue();
     markSdError("open");
     return false;
   }
 
   portENTER_CRITICAL(&recorder_mux);
   recorder_status.file_started = true;
-  recorder_status.state = State::FileLogging;
+  if (!recorder_status.power_lost) {
+    recorder_status.state = State::FileLogging;
+  }
   prebuffer_dump_index = 0;
   recorder_status.prebuffer_dumped_records = 0;
   recorder_status.prebuffer_dump_done = recorder_status.buffered_records == 0;
@@ -337,12 +327,12 @@ bool startFileLogging(uint32_t now) {
 }
 
 // SD가 돌아오면 기존 파일을 건드리지 않고 LOG1, LOG2 같은 새 파일을 열어 queue를 비웁니다.
-bool tryRecoverSd(uint32_t now) {
-  if (!sd_recovery_mode) {
+bool tryRecoverSd(uint32_t now, bool force) {
+  if (!isSdRecoveryMode()) {
     return true;
   }
 
-  if (last_sd_remount_ms != 0 &&
+  if (!force && last_sd_remount_ms != 0 &&
       now - last_sd_remount_ms < ft26::SD_REMOUNT_INTERVAL_MS) {
     return false;
   }
@@ -360,11 +350,14 @@ bool tryRecoverSd(uint32_t now) {
 
   portENTER_CRITICAL(&recorder_mux);
   recorder_status.file_started = true;
-  recorder_status.prebuffer_dump_done = true;
-  recorder_status.state = State::FileLogging;
+  if (!recorder_status.power_lost) {
+    recorder_status.state = State::FileLogging;
+  }
+  recorder_status.sd_recovering = false;
+  ++recorder_status.sd_recovery_count;
+  sd_recovery_mode = false;
   portEXIT_CRITICAL(&recorder_mux);
 
-  sd_recovery_mode = false;
   last_sync_ms = now;
   logLinef("INFO", "SD recovered %s queued=%u", current_filename,
            record_queue::count());
@@ -445,7 +438,7 @@ bool flushRemainingPrebuffer(bool report_errors) {
 bool drainStorageQueueChunk(uint32_t now) {
   (void)now;
   if (!isFileStarted() || !recorder_status.prebuffer_dump_done ||
-      record_queue::empty()) {
+      (pending_record_count == 0 && record_queue::empty())) {
     return true;
   }
 
@@ -455,38 +448,41 @@ bool drainStorageQueueChunk(uint32_t now) {
     return true;
   }
 
-  size_t count = 0;
-  const log_format::Log* records =
-      record_queue::readBlock(ft26::STORAGE_WRITE_RECORDS_PER_TICK, count);
+  if (pending_record_count == 0) {
+    pending_record_count = record_queue::popBlock(
+        pending_records, ft26::STORAGE_WRITE_RECORDS_PER_TICK);
+    updateStorageQueueStatus();
+  }
 
-  if (records == nullptr || count == 0) {
+  if (pending_record_count == 0) {
     return true;
   }
 
-  if (!storage::writeRecords(records, count)) {
+  if (!storage::writeRecords(pending_records, pending_record_count)) {
     markSdError("write queue chunk");
     return false;
   }
 
-  record_queue::pop(count);
+  recorder_status.records_written += pending_record_count;
+  pending_record_count = 0;
   updateStorageQueueStatus();
-  recorder_status.records_written += count;
   status_led::notifySdWrite();
   return true;
 }
 
 // 전원 차단 순간에는 남은 SD writer queue를 한 번에 써서 로그 보존을 우선합니다.
 bool flushStorageQueue(bool report_errors) {
-  while (!record_queue::empty()) {
-    size_t count = 0;
-    const log_format::Log* records =
-        record_queue::readBlock(ft26::STORAGE_QUEUE_RECORD_CAPACITY, count);
-
-    if (records == nullptr || count == 0) {
-      return false;
+  while (pending_record_count > 0 || !record_queue::empty()) {
+    if (pending_record_count == 0) {
+      pending_record_count = record_queue::popBlock(
+          pending_records, ft26::STORAGE_PENDING_RECORD_CAPACITY);
+      updateStorageQueueStatus();
+      if (pending_record_count == 0) {
+        return false;
+      }
     }
 
-    if (!storage::writeRecords(records, count)) {
+    if (!storage::writeRecords(pending_records, pending_record_count)) {
       if (report_errors) {
         markSdError("flush storage queue");
       } else {
@@ -498,8 +494,9 @@ bool flushStorageQueue(bool report_errors) {
       return false;
     }
 
-    record_queue::pop(count);
-    recorder_status.records_written += count;
+    recorder_status.records_written += pending_record_count;
+    pending_record_count = 0;
+    updateStorageQueueStatus();
     status_led::notifySdWrite();
   }
 
@@ -517,7 +514,7 @@ void syncIfNeeded(uint32_t now) {
     return;
   }
 
-  if (!record_queue::empty()) {
+  if (pending_record_count > 0 || !record_queue::empty()) {
     return;
   }
 
@@ -548,6 +545,20 @@ void updateRangeFaults(uint32_t now, const ads_scheduler::LatestReadings& latest
 // 최신 측정값으로 원본 호환 100Hz record를 생성합니다.
 void captureRecord(uint32_t now) {
   const ads_scheduler::LatestReadings& latest = ads_scheduler::latest();
+  const bool fast_fresh = latest.hv_voltage_valid && latest.hv_current_valid &&
+                          now - latest.hv_pair_updated_ms <=
+                              ft26::FAST_SAMPLE_MAX_AGE_MS;
+  const bool lv_fresh = latest.lv_valid &&
+                        now - latest.lv_updated_ms <=
+                            ft26::SLOW_SAMPLE_MAX_AGE_MS;
+  const bool temp_fresh = latest.temp_valid &&
+                          now - latest.temp_updated_ms <=
+                              ft26::SLOW_SAMPLE_MAX_AGE_MS;
+  if (!fast_fresh || !lv_fresh || !temp_fresh) {
+    ++recorder_status.records_skipped_invalid;
+    return;
+  }
+
   updateRangeFaults(now, latest);
 
   const log_format::Log record =
@@ -589,17 +600,6 @@ bool startRecorderTasks() {
     return true;
   }
 
-  if (sd_mutex == nullptr) {
-    sd_mutex = xSemaphoreCreateMutex();
-  }
-
-  if (sd_mutex == nullptr) {
-    logLine("ERROR", "FreeRTOS SD mutex create failed");
-    recorder_status.state = State::Fault;
-    recorder_status.sd_error = true;
-    return false;
-  }
-
   BaseType_t ok = xTaskCreate(measurementTaskMain, "ft26_measure", 4096, nullptr,
                               3, &measurement_task);
   if (ok != pdPASS) {
@@ -639,7 +639,9 @@ void begin(const calibration::Result& calibration_result) {
   next_record_ms = recorder_status.started_ms;
   last_sync_ms = recorder_status.started_ms;
   prebuffer_dump_index = 0;
+  pending_record_count = 0;
   power_missing_since_ms = 0;
+  power_shutdown_complete = false;
   record_queue::reset();
   sd_recovery_mode = false;
   last_sd_remount_ms = 0;
@@ -710,7 +712,7 @@ void runStorageStep(uint32_t now) {
     return;
   }
 
-  if (sd_recovery_mode && !tryRecoverSd(now)) {
+  if (isSdRecoveryMode() && !tryRecoverSd(now, false)) {
     unlockSd();
     return;
   }
@@ -723,12 +725,6 @@ void runStorageStep(uint32_t now) {
     }
   }
 
-  if (isPowerLost()) {
-    closeOpenLogForPowerLoss();
-    unlockSd();
-    return;
-  }
-
   if (!dumpPrebufferChunk(now)) {
     unlockSd();
     return;
@@ -738,10 +734,6 @@ void runStorageStep(uint32_t now) {
     return;
   }
   syncIfNeeded(now);
-
-  if (isPowerLost()) {
-    closeOpenLogForPowerLoss();
-  }
 
   unlockSd();
 }
@@ -768,12 +760,23 @@ void storageTaskMain(void* parameter) {
 
 // loop는 FreeRTOS task가 돌 수 있게 CPU를 양보합니다.
 void tick() {
-  vTaskDelay(pdMS_TO_TICKS(1000));
+  vTaskDelay(pdMS_TO_TICKS(1));
 }
 
 // recorder의 현재 상태를 반환합니다.
-const Status& status() {
-  return recorder_status;
+Status status() {
+  portENTER_CRITICAL(&recorder_mux);
+  const Status snapshot = recorder_status;
+  portEXIT_CRITICAL(&recorder_mux);
+  return snapshot;
+}
+
+bool active() {
+  portENTER_CRITICAL(&recorder_mux);
+  const bool is_active = recorder_status.state == State::Buffering ||
+                         recorder_status.state == State::FileLogging;
+  portEXIT_CRITICAL(&recorder_mux);
+  return is_active;
 }
 
 }  // namespace ft26::recorder

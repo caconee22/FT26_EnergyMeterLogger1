@@ -23,9 +23,9 @@ constexpr uint8_t I2C_ADDR_ADS1115 = 0x48;
 constexpr uint8_t I2C_ADDR_DS3231 = 0x68;
 
 constexpr uint32_t SERIAL_BAUD = 921600;
-constexpr uint8_t COM_FILE_LIST_MAX = 10;
 constexpr size_t COM_FILE_NAME_MAX = 96;
 constexpr size_t COM_READ_CHUNK_SIZE = 256;
+constexpr size_t STORAGE_PENDING_RECORD_CAPACITY = 64;
 constexpr uint32_t I2C_CLOCK_HZ = 400000;
 constexpr uint16_t I2C_TIMEOUT_MS = 5;
 
@@ -47,6 +47,8 @@ constexpr uint32_t RECORD_INTERVAL_MS = 10;
 constexpr uint32_t MEASUREMENT_TASK_INTERVAL_MS = 1;
 constexpr uint32_t STORAGE_TASK_INTERVAL_MS = 1;
 constexpr uint32_t SLOW_CHANNEL_INTERVAL_MS = 100;
+constexpr uint32_t FAST_SAMPLE_MAX_AGE_MS = 30;
+constexpr uint32_t SLOW_SAMPLE_MAX_AGE_MS = 250;
 constexpr uint32_t FILE_SYNC_INTERVAL_MS = 500;
 constexpr uint32_t CALIBRATION_WAIT_MS = 300;
 constexpr uint8_t CALIBRATION_SAMPLE_COUNT = 16;

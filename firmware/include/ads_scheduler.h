@@ -16,6 +16,9 @@ struct LatestReadings {
   bool hv_current_valid;                            // HV 전류 최신값 유효 여부입니다.
   bool lv_valid;                                    // LV 최신값 유효 여부입니다.
   bool temp_valid;                                  // 온도 최신값 유효 여부입니다.
+  uint32_t hv_pair_updated_ms;
+  uint32_t lv_updated_ms;
+  uint32_t temp_updated_ms;
 };
 
 // ADS 비동기 스케줄러 1회 진행 결과입니다.
@@ -35,5 +38,8 @@ TickResult tick(uint32_t now_ms);
 
 // 최신 측정값 묶음을 반환합니다.
 const LatestReadings& latest();
+
+// Invalidate all published samples after an ADC communication failure.
+void invalidateAll();
 
 }  // namespace ft26::ads_scheduler

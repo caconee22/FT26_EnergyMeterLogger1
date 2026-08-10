@@ -12,6 +12,8 @@ namespace {
 
 bool mounted = false;
 File log_file;
+SemaphoreHandle_t card_mutex = nullptr;
+uint64_t expected_file_size = 0;
 constexpr uint16_t kMaxRotatedFileIndex = 9999;
 
 // 원본 로그 파일명 규칙에서 확장자를 제외한 공통 이름을 만듭니다.
@@ -83,10 +85,31 @@ bool findAvailableSessionFileName(const log_format::BootTime& boot_time,
 
 // SD SPI 버스를 시작하고 카드를 마운트합니다. 파일은 만들지 않습니다.
 bool beginCard() {
+  if (card_mutex == nullptr) {
+    card_mutex = xSemaphoreCreateMutex();
+    if (card_mutex == nullptr) {
+      mounted = false;
+      return false;
+    }
+  }
   SPI.begin(ft26::PIN_SD_SCK, ft26::PIN_SD_MISO, ft26::PIN_SD_MOSI,
             ft26::PIN_SD_CS);
   mounted = SD.begin(ft26::PIN_SD_CS, SPI);
   return mounted;
+}
+
+bool lockCard(uint32_t timeout_ms) {
+  if (card_mutex == nullptr) {
+    card_mutex = xSemaphoreCreateMutex();
+  }
+  return card_mutex != nullptr &&
+         xSemaphoreTake(card_mutex, pdMS_TO_TICKS(timeout_ms)) == pdTRUE;
+}
+
+void unlockCard() {
+  if (card_mutex != nullptr) {
+    xSemaphoreGive(card_mutex);
+  }
 }
 
 // SD card를 다시 마운트합니다. 기존 파일은 믿지 않고 닫은 뒤 시도합니다.
@@ -94,6 +117,7 @@ bool remountCard() {
   if (log_file) {
     log_file.close();
   }
+  expected_file_size = 0;
 
   SD.end();
   mounted = false;
@@ -136,8 +160,19 @@ bool openLogFile(const log_format::Header& header, char* filename, size_t filena
     return false;
   }
 
-  return log_file.write(reinterpret_cast<const uint8_t*>(&header), sizeof(header)) ==
-         sizeof(header);
+  log_file.clearWriteError();
+  const bool written =
+      log_file.write(reinterpret_cast<const uint8_t*>(&header), sizeof(header)) ==
+          sizeof(header) &&
+      log_file.getWriteError() == 0;
+  if (!written) {
+    log_file.close();
+    expected_file_size = 0;
+    mounted = SD.cardType() != CARD_NONE;
+    return false;
+  }
+  expected_file_size = sizeof(header);
+  return true;
 }
 
 // 기존 파일은 건드리지 않고 LOG1, LOG2 같은 새 복구 파일을 엽니다.
@@ -164,8 +199,19 @@ bool openRecoveryLogFile(const log_format::Header& header, char* filename,
     return false;
   }
 
-  return log_file.write(reinterpret_cast<const uint8_t*>(&header), sizeof(header)) ==
-         sizeof(header);
+  log_file.clearWriteError();
+  const bool written =
+      log_file.write(reinterpret_cast<const uint8_t*>(&header), sizeof(header)) ==
+          sizeof(header) &&
+      log_file.getWriteError() == 0;
+  if (!written) {
+    log_file.close();
+    expected_file_size = 0;
+    mounted = SD.cardType() != CARD_NONE;
+    return false;
+  }
+  expected_file_size = sizeof(header);
+  return true;
 }
 
 // 원본 호환 16바이트 record 묶음을 열린 파일에 씁니다.
@@ -175,7 +221,14 @@ bool writeRecords(const log_format::Log* records, size_t count) {
   }
 
   const size_t bytes = sizeof(log_format::Log) * count;
-  return log_file.write(reinterpret_cast<const uint8_t*>(records), bytes) == bytes;
+  log_file.clearWriteError();
+  const bool written =
+      log_file.write(reinterpret_cast<const uint8_t*>(records), bytes) == bytes &&
+      log_file.getWriteError() == 0;
+  if (written) {
+    expected_file_size += bytes;
+  }
+  return written;
 }
 
 // 열린 로그 파일의 버퍼를 SD 카드에 반영합니다.
@@ -185,6 +238,11 @@ bool syncLogFile() {
   }
 
   log_file.flush();
+  if (log_file.getWriteError() != 0 || SD.cardType() == CARD_NONE ||
+      log_file.size() < expected_file_size) {
+    mounted = false;
+    return false;
+  }
   return true;
 }
 
@@ -194,6 +252,7 @@ void closeLogFile() {
     log_file.flush();
     log_file.close();
   }
+  expected_file_size = 0;
 }
 
 // 로그 파일이 현재 열려 있는지 반환합니다.

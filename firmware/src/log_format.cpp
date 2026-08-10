@@ -2,7 +2,8 @@
 
 #include <string.h>
 
-namespace ft26::log_format {
+namespace ft26 {
+namespace log_format {
 
 uint16_t checksum16(const void* data, size_t size) {
   const uint8_t* bytes = static_cast<const uint8_t*>(data);
@@ -94,4 +95,5 @@ void finalize(Log& log) {
   log.checksum = checksum16(&log, sizeof(log));
 }
 
-}  // namespace ft26::log_format
+}  // namespace log_format
+}  // namespace ft26

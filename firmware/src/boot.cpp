@@ -67,18 +67,23 @@ void fillUidFromMac() {
 
 void fillBootTimeFromRtc() {
   if (!hw.rtc_ready) {
-    hw.boot_time = {};
+    hw.boot_time = {0, 1, 1, 0, 0, 0, 0};
     return;
   }
 
   const DateTime now = rtc.now();
-  hw.boot_time.year = static_cast<uint8_t>(now.year() >= 2000 ? now.year() - 2000 : 0);
-  hw.boot_time.month = now.month();
-  hw.boot_time.day = now.day();
-  hw.boot_time.hour = now.hour();
-  hw.boot_time.minute = now.minute();
-  hw.boot_time.second = now.second();
-  hw.boot_time.millisecond = static_cast<uint16_t>(millis() % 1000);
+  const uint32_t elapsed_ms = millis() - hw.boot_millis;
+  const uint64_t now_ms = static_cast<uint64_t>(now.unixtime()) * 1000ULL;
+  const uint64_t boot_ms = now_ms > elapsed_ms ? now_ms - elapsed_ms : 0;
+  const DateTime boot_time(static_cast<uint32_t>(boot_ms / 1000ULL));
+  hw.boot_time.year =
+      static_cast<uint8_t>(boot_time.year() >= 2000 ? boot_time.year() - 2000 : 0);
+  hw.boot_time.month = boot_time.month();
+  hw.boot_time.day = boot_time.day();
+  hw.boot_time.hour = boot_time.hour();
+  hw.boot_time.minute = boot_time.minute();
+  hw.boot_time.second = boot_time.second();
+  hw.boot_time.millisecond = static_cast<uint16_t>(boot_ms % 1000ULL);
 
   logLinef("INFO", "RTC boot time 20%02u-%02u-%02u %02u:%02u:%02u.%03u",
            hw.boot_time.year, hw.boot_time.month, hw.boot_time.day,
@@ -171,6 +176,8 @@ void initializeRtc() {
   if (hw.rtc_lost_power) {
     logLine("ERROR", "DS3231 lostPower flag is set");
     status_led::setFault(status_led::FaultGroup::Rtc);
+    hw.boot_time = {0, 1, 1, 0, 0, 0, 0};
+    return;
   }
 
   fillBootTimeFromRtc();

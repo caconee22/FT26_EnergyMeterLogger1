@@ -3,7 +3,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-namespace ft26::log_format {
+namespace ft26 {
+namespace log_format {
 
 constexpr uint8_t PROTOCOL_VERSION = 0x02;
 constexpr uint8_t LOG_MAGIC = 0xAA;
@@ -113,4 +114,5 @@ void finalize(Header& header);
 // 로그 패킷 checksum을 다시 계산해 채웁니다.
 void finalize(Log& log);
 
-}  // namespace ft26::log_format
+}  // namespace log_format
+}  // namespace ft26
