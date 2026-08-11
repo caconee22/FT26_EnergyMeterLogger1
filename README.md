@@ -34,6 +34,11 @@ This repository contains both parts of the project:
   - sync RTC from the PC clock
   - delete selected source log files from the SD card
   - serial console with TX/RX event view and manual commands
+- Log analyzer export and review tools
+  - open `.log`, `.json`, and `.csv` files
+  - export JSON, CSV, and graph images
+  - switch between 80 kW and 10 kW power-limit checks
+  - reverse current polarity for review when the source log direction is inverted
 - Python virtual device for PC-side viewer testing
   - exposes a serial port as if it were the hardware
   - maps a local folder as the device SD card
@@ -64,6 +69,84 @@ I2C devices:
 
 Serial device protocol runs at `921600 bps` over USB CDC and physical UART
 only when the device boots into COM mode.
+
+## Technical Architecture
+
+FT26 is split into a small firmware runtime that owns the hardware and a local
+viewer that owns transfer, parsing, and review. The firmware keeps the original
+binary log contract stable; the viewer treats the device as a serial file server
+when the logger is in COM mode.
+
+```text
+Vehicle power / sensors
+        |
+        v
+ESP32-C3 firmware
+  |- Power sense: GPIO0
+  |- ADS1115: HV voltage, HV current, LV voltage, temperature
+  |- DS3231M: boot timestamp / RTC sync target
+  |- microSD: original-compatible binary logs
+  `- USB CDC / UART: COM protocol at 921600 bps
+        |
+        v
+FT26 viewer
+  |- Device: list, receive, save, RTC sync, delete
+  `- Log Analyzer: parse, graph, metadata, export
+```
+
+### Firmware Modules
+
+| Module | Responsibility |
+| --- | --- |
+| `main.cpp` | Entry point. Selects COM mode or starts calibration and recording. |
+| `boot.cpp` | Initializes LED, Serial, UID, power sense, I2C, RTC, ADS1115, and SD. Selects Record/COM mode. |
+| `calibration.cpp` | Performs HV zero calibration before the recorder starts. |
+| `ads_scheduler.cpp` | Runs non-blocking ADS1115 conversions and keeps latest channel readings. |
+| `measurements.cpp` | Converts raw ADC values into log units and range-status flags. |
+| `recorder.cpp` | Owns 100 Hz capture, 20 second prebuffer, SD writer queue, power-loss flush, and SD recovery. |
+| `storage.cpp` | Mounts microSD, creates `.log` / `.LOGn` files, writes headers and records, and syncs files. |
+| `com_mode.cpp` | Handles USB CDC and UART commands: `HELLO`, `LIST`, `READ`/`REED`, `RTC`/`TIME`, and `DEL`. |
+| `com_protocol.cpp` | Validates indexed commands, RTC timestamps, and log-file ordering. |
+| `log_format.cpp` | Generates the 32-byte header and 16-byte record/event packets with checksum. |
+| `status_led.cpp` | Owns normal LED modes, SD-write activity blink, latched fault pulses, and power-fail off. |
+
+### Runtime States
+
+| State | Entry condition | Main behavior | Next route |
+| --- | --- | --- | --- |
+| Boot | Reset or power-up | Initialize basic hardware and read power sense | COM mode or Record boot |
+| COM mode | LV/drive power remains absent for 1 second | Wait for serial commands over USB CDC/UART | Reset required to enter Record mode |
+| Record boot | LV/drive power is present | Initialize I2C, RTC, ADS1115, SD | Calibration |
+| Calibration | Record boot completed | Wait briefly, sample HV zero points | Buffering or Fault |
+| Buffering | Calibration success | Capture 100 Hz records into RAM without creating an SD file | FileLogging after 20 seconds |
+| FileLogging | 20 second delay elapsed | Create log file, write prebuffer, batch-write new records, sync periodically | SD Recovery, PowerFail, or Fault |
+| SD Recovery | SD open/write/sync failure | Keep records in RAM queue while retrying SD remount | New `.LOGn` file when SD returns |
+| PowerFail | Power sense confirms input loss | Flush and sync if a file has started, then turn LED off | Shutdown/reset |
+| Fault | Hardware, SD, ADC, RTC, or range error | Latch the first fault group on LED; some recovery work may continue | Manual reset or power cycle |
+
+### Data Path
+
+| Stage | Firmware behavior | Output |
+| --- | --- | --- |
+| Sample | ADS scheduler updates fast HV channels and slower LV/temperature channels. | Latest validated readings |
+| Record | Recorder emits one original-compatible record every `10 ms` when fresh readings are available. | 16-byte `LOG_TYPE_RECORD` |
+| Prebuffer | First 20 seconds are held in RAM to avoid early corrupted files. | RAM prebuffer |
+| File start | Header is written after the startup boundary. | 32-byte `LOG_TYPE_HEADER` |
+| Storage | Prebuffer and queued records are written in small batches. | `.log` file on microSD |
+| Recovery | On SD failure, existing files are not renamed or appended blindly. | New `.LOG1`, `.LOG2`, ... file |
+| Transfer | Viewer requests a file by index and receives chunked binary data. | Saved `.log` on PC |
+| Analysis | Viewer parses the original binary format and calculates graph metadata. | Graphs, JSON, CSV, image export |
+
+### Error Handling Policy
+
+| Error class | Detection point | Firmware action | LED indication |
+| --- | --- | --- | --- |
+| Power loss | GPIO0 power sense below threshold for confirmation window | Stop normal capture, flush/sync if possible, close file | Off |
+| RTC fault | DS3231 missing, `begin()` failure, or `lostPower()` | Mark RTC invalid; header time may fall back to default | 2 pulses |
+| ADC fault | ADS1115 missing, conversion timeout, or read failure | Stop valid measurement path and latch ADC fault | 3 pulses |
+| SD fault | Mount, open, write, sync, or prebuffer overflow failure | Enter recovery, queue records in RAM, retry remount | 4 pulses |
+| Range fault | HV/current/temperature range held beyond configured time | Keep recording but latch range fault | 5 pulses |
+| Unknown fault | Reserved for unclassified future errors | Reserved behavior | 6 pulses |
 
 ## Logging Behavior
 
@@ -124,7 +207,8 @@ Boot
          |- 이후 record는 RAM queue를 거쳐 SD에 batch 기록
          |
          |- SD write/sync 실패
-         |  |- 측정은 RAM queue에 계속 보관
+         |  |- RAM queue 용량 안에서 측정 record 보관
+         |  |- queue가 오래 가득 차면 오래된 record부터 drop 가능
          |  |- 1초 간격으로 SD remount 시도
          |  `- 복구되면 기존 파일은 건드리지 않고 .LOG1/.LOG2 파일에 이어 기록
          |
@@ -151,6 +235,33 @@ LED 오류 표시는 한 번 latch되면 일반 LED 모드보다 우선합니다
 | 5 pulses + 3초 pause 반복 | Range fault | HV voltage/current 측정값이 일정 시간 범위를 벗어남 |
 | 6 pulses + 3초 pause 반복 | Unknown fault | 분류되지 않은 오류용 예약 표시 |
 
+### Firmware Timing Summary
+
+| Item | Value | Meaning |
+| --- | --- | --- |
+| COM mode power wait | `1000 ms` | 부팅 직후 LV/drive power가 없을 때 1초 더 확인 |
+| Power-loss confirm | `10 ms` | 순간 노이즈가 아니라 전원 차단인지 확인하는 시간 |
+| HV zero calibration wait | `300 ms` | calibration sample을 잡기 전 안정화 대기 |
+| Record interval | `10 ms` | 100 Hz log record 생성 주기 |
+| Slow ADS channel interval | `100 ms` | LV voltage와 temperature 갱신 목표 주기 |
+| File start delay | `20000 ms` | 부팅 후 20초 동안 SD 파일 없이 RAM prebuffer 사용 |
+| SD sync interval | `500 ms` | queue가 비었을 때 열린 log file flush 주기 |
+| SD remount retry | `1000 ms` | SD 오류 후 remount 재시도 간격 |
+| Storage queue capacity | `1000 records` | SD 장애 중 RAM queue에 유지할 수 있는 최대 record 수 |
+
+### Log File Naming
+
+Normal log files use the original-compatible session name:
+
+```text
+20YY-MM-DD-HH-MM-SS-ms UID0-UID1-UID2.log
+```
+
+If a file with the same session name already exists, the firmware creates the
+next numbered file, such as `.LOG1`, `.LOG2`, and so on. During SD recovery,
+the existing file is closed and left untouched; recovered queued data is written
+to a newly numbered `.LOGn` file.
+
 ## Serial Protocol
 
 All commands are ASCII lines ending in `\n`.
@@ -168,6 +279,16 @@ All commands are ASCII lines ending in `\n`.
 Unsupported commands return `ERR COMMAND`. `FORMAT` is intentionally not
 implemented.
 
+Command availability:
+
+| Command | Record mode | COM mode / recorder inactive |
+| --- | --- | --- |
+| `HELLO` | allowed for status | allowed |
+| `LIST` | allowed if SD is available | allowed |
+| `READ` / `REED` | blocked with `ERR BUSY RECORDING` | allowed |
+| `DEL` | blocked with `ERR BUSY RECORDING` | allowed |
+| `RTC` / `TIME` | blocked with `ERR BUSY RECORDING` | allowed if RTC is present |
+
 COM mode is selected only during boot when the LV/drive power condition indicates
 that the logger should expose the serial device interface. If the firmware boots
 into Record mode, it does not later switch back into COM mode; serial output is
@@ -178,10 +299,15 @@ used only for firmware log messages.
 The viewer has two main areas:
 
 - Log Analyzer: open a local FT26/FSK-compatible binary `.log` file, inspect
-  graphs, metadata, and export analysis output.
+  graphs, metadata, power-limit violations, and export analysis output.
 - Device: connect to the hardware through Web Serial, receive logs, save the
   received file, sync RTC, delete selected SD logs, and inspect serial TX/RX
   events.
+
+The Log Analyzer also accepts exported `.json` and `.csv` files, can export the
+current graph image, can toggle the power-limit check between 80 kW and 10 kW,
+and can reverse current polarity for review. A log received from the Device tab
+is automatically loaded into the analyzer.
 
 Web Serial requires a compatible Chromium-based browser such as Chrome or Edge.
 The viewer is intended to run locally during development or as a built static
@@ -244,6 +370,10 @@ python tools\ft26_virtual_device.py --sd-dir samples --dry-run
 For browser testing on Windows, use a virtual serial port pair and connect the
 viewer to the paired port.
 
+`DEL <index>` in the virtual device deletes the selected file from the mapped
+folder. The `--delete-enabled` option is kept only as a compatibility flag and
+does not act as a safety lock.
+
 ## Important Notes
 
 - FT26 no longer uses USB Mass Storage as the primary transfer path. Use the
@@ -255,12 +385,6 @@ viewer to the paired port.
   battery was removed or discharged.
 - `DEL <index>` permanently removes the selected SD log file. There is no undo.
 - `FORMAT` is not available by design.
-- The firmware has been build-tested and protocol-tested in software. Physical
-  validation is still required for final vehicle use, especially:
-  - actual UART/USB CDC transfer reliability at `921600 bps`
-  - SD removal/remount recovery
-  - RTC hardware behavior
-  - real power-loss behavior after the 20 second startup boundary
 
 ## Repository Status
 
