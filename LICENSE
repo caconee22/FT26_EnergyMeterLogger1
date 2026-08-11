@@ -1,0 +1,34 @@
+This project follows the dual-license model used by the upstream
+Formula Student Korea Electric Energy Meter project.
+
+1. For non-commercial use:
+
+   -----------------------------------------------------------------------------
+   "THE BEER-WARE LICENSE" (Revision 42):
+   luftaquila wrote the original Formula Student Korea Electric Energy Meter
+   project. As long as you retain this notice, you can do whatever you want with
+   the non-commercially licensed portions of this stuff. If you meet the original
+   author someday, and you think this stuff is worth it, you can buy them a beer
+   in return.
+   -----------------------------------------------------------------------------
+
+   FT26 EnergyMeter Logger modifications and project-specific additions are
+   distributed under the same non-commercial Beer-Ware style terms unless a
+   separate written license states otherwise.
+
+2. For commercial use:
+
+   Commercial use requires a separate commercial license from the applicable
+   rights holders.
+
+   The original Formula Student Korea Electric Energy Meter project states:
+
+     You must obtain a separate commercial license from the author.
+     Please contact mail@luftaquila.io for commercial licensing options.
+
+   For FT26-specific modifications, firmware, viewer changes, documentation, and
+   project-specific integration work, obtain separate written permission from the
+   FT26 EnergyMeter Logger rights holder as well.
+
+Third-party dependencies retain their own licenses. See package manifests,
+dependency lockfiles, and NOTICE.md where applicable.

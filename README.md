@@ -386,6 +386,21 @@ does not act as a safety lock.
 - `DEL <index>` permanently removes the selected SD log file. There is no undo.
 - `FORMAT` is not available by design.
 
+## License
+
+This project follows the dual-license model used by the upstream Formula Student
+Korea Electric Energy Meter project:
+
+- Non-commercial use: Beer-Ware License, Revision 42, with the original upstream
+  notice retained.
+- Commercial use: separate commercial permission is required from the applicable
+  rights holders. For upstream-derived portions, follow the original project
+  notice and contact `mail@luftaquila.io` for commercial licensing options. For
+  FT26-specific modifications and integration work, obtain separate written
+  permission from the FT26 EnergyMeter Logger rights holder as well.
+
+See [LICENSE](LICENSE) and [viewer/NOTICE.md](viewer/NOTICE.md) for details.
+
 ## Repository Status
 
 This project is adapted from the original Formula Student Korea Electric Energy
