@@ -87,6 +87,70 @@ If power is lost after the file has started, the firmware tries to flush and
 sync the open file. This improves the chance of a valid log, but it cannot
 guarantee a clean close if the board loses power instantly.
 
+## Firmware Operation Flow
+
+아래 트리는 전원 상태와 주변 장치 상태에 따라 펌웨어가 어느 루트로
+진입하는지 빠르게 예상하기 위한 요약입니다.
+
+```text
+Boot
+|- LED, Serial, UID, Power sense 초기화
+|
+|- LV/drive power 없음
+|  |- 1초 동안 다시 확인
+|  |- 계속 없음 -> COM mode
+|  |  |- USB CDC / UART 921600 bps 명령 대기
+|  |  |- HELLO, LIST, READ/REED, RTC/TIME, DEL 처리
+|  |  `- Record mode로 자동 전환하지 않음
+|  `- 전원 감지됨 -> Record boot 계속 진행
+|
+`- LV/drive power 있음
+   |- I2C, RTC, ADS1115, microSD 초기화
+   |- HV zero calibration 수행
+   |
+   |- calibration 실패 또는 전원 차단
+   |  `- 기록 시작하지 않고 Fault/Power-off 상태
+   |
+   `- calibration 성공
+      |- 100 Hz 측정 시작
+      |- 처음 20초: SD 파일 생성 없이 RAM에 prebuffer 저장
+      |
+      |- 20초 전에 전원 차단
+      |  `- SD 파일을 만들지 않고 RAM buffer 폐기
+      |
+      `- 20초 이후
+         |- 새 .log 파일 생성
+         |- prebuffer를 파일에 기록
+         |- 이후 record는 RAM queue를 거쳐 SD에 batch 기록
+         |
+         |- SD write/sync 실패
+         |  |- 측정은 RAM queue에 계속 보관
+         |  |- 1초 간격으로 SD remount 시도
+         |  `- 복구되면 기존 파일은 건드리지 않고 .LOG1/.LOG2 파일에 이어 기록
+         |
+         `- 전원 차단
+            |- 가능한 경우 남은 buffer/queue flush 및 sync
+            `- LED off
+```
+
+### LED Indicators
+
+LED 오류 표시는 한 번 latch되면 일반 LED 모드보다 우선합니다. 전원 차단이
+감지되면 오류 표시보다 우선해서 LED가 꺼집니다.
+
+| LED pattern | Meaning | Typical route |
+| --- | --- | --- |
+| Solid on | 부팅 초기화 중 | `Boot` 직후 LED 초기화 완료 |
+| Slow pulse: 1초 주기, 약 0.2초 켜짐 | 정상 대기/동작 | COM mode 대기 또는 Record mode buffering/recording |
+| SD write toggle: SD 기록 직후 0.1초 간격 점멸 | SD 기록 활동 | prebuffer dump, record batch write, power-loss flush |
+| Off | 꺼짐 또는 전원 차단 처리 | 전원 차단 감지 후 `powerFailOff()` |
+| 1 pulse + 3초 pause 반복 | Power fault | 부팅 또는 기록 중 LV/drive power 없음 |
+| 2 pulses + 3초 pause 반복 | RTC fault | DS3231 미검출, begin 실패, RTC lostPower |
+| 3 pulses + 3초 pause 반복 | ADC fault | ADS1115 미검출, begin 실패, ADS read/calibration 실패 |
+| 4 pulses + 3초 pause 반복 | SD fault | SD mount/open/write/sync 실패, prebuffer overflow |
+| 5 pulses + 3초 pause 반복 | Range fault | HV voltage/current 측정값이 일정 시간 범위를 벗어남 |
+| 6 pulses + 3초 pause 반복 | Unknown fault | 분류되지 않은 오류용 예약 표시 |
+
 ## Serial Protocol
 
 All commands are ASCII lines ending in `\n`.
